@@ -1,0 +1,60 @@
+# Lazarus BlueNoroff Research Ingestion Configuration
+
+[repository]
+# GitHub repository URL
+source_url = "https://github.com/tayvano/lazarus-bluenoroff-research"
+
+# Local path where repository will be cloned
+local_path = "./data_repo"
+
+# Branch to track
+branch = "main"
+
+# Enable automatic sync on start
+sync_on_start = true
+
+[database]
+# ClickHouse server
+host = "localhost"
+port = 8123
+database = "lazarus_research"
+
+# Batch size for bulk insertions
+batch_size = 1000
+
+# Optional authentication (uncomment if needed)
+# username = "default"
+# password = ""
+
+[pipeline]
+# Number of parallel workers for processing files
+parallel_workers = 4
+
+# Patterns to skip during scanning
+# IMPORTANT: Exclude malicious-shit directory to avoid ingesting malware
+skip_patterns = [
+  "*.zip",
+  "*.pdf",
+  "*.exe",
+  "*.dll",
+  "*.bin",
+  ".git/*",
+  "malicious-shit/*",
+  "**/malicious-shit/*",
+  "malicious-shit/**",
+]
+
+# Force reprocess all files (ignores cache)
+force_reprocess = false
+
+# Maximum file size in megabytes
+max_file_size_mb = 10
+
+[extraction]
+# Enable/disable specific extraction features
+extract_crypto_addresses = true
+extract_incidents = true
+extract_iocs = true
+
+# Normalize markdown before extraction
+normalize_markdown = true

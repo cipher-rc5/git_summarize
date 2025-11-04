@@ -1,0 +1,72 @@
+[package]
+name = "lazarus_ingest"
+version = "0.1.0"
+authors = ["ℭ𝔦𝔭𝔥𝔢𝔯", "https://github.com/cipher-rc5"]
+edition = "2024"
+repository = "https://github.com/cipher_rc5/lazarus_ingest"
+description = "application ingesting DPRK,Lazarus data"
+
+[dependencies]
+# error handling
+anyhow = "1.0.100"
+thiserror = "2.0.17"
+
+# async runtime
+tokio = { version = "1.48.0", features = ["full"] }
+
+# commandline
+clap = { version = "4.5.51", features = ["derive", "env"] }
+
+# serialization
+serde = { version = "1.0.228", features = ["derive"] }
+
+# configuration
+config = "0.15.18"
+
+# repository operations
+git2 = "0.20.2"
+walkdir = "2.5.0"
+
+# database
+clickhouse = "0.14.0"
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+# markdown processing
+pulldown-cmark = { version = "0.13.0", default-features = false }
+yaml-rust = "0.4.5"
+
+# entity extraction
+lazy_static = "1.5.0"
+regex = "1.12.2"
+
+# hashing
+sha2 = "0.10.9"
+
+# logging
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+# progress reporting
+indicatif = "0.18.2"
+
+# time
+chrono = "0.4.42"
+futures = "0.3.31"
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+tempfile = "3.23.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+# Optimize dependencies in dev mode for better performance
+[profile.dev.package."*"]
+opt-level = 2
