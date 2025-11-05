@@ -3,23 +3,32 @@
 // reference: Input validation patterns
 
 use crate::error::{PipelineError, Result};
+use std::fs;
 use std::path::Path;
 
 pub struct Validator;
 
 impl Validator {
     pub fn validate_file_path(path: &Path) -> Result<()> {
-        if !path.exists() {
+        let canonical = fs::canonicalize(path).map_err(|e| {
+            PipelineError::Validation(format!(
+                "Cannot canonicalize path {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        if !canonical.is_absolute() {
             return Err(PipelineError::Validation(format!(
-                "File does not exist: {}",
-                path.display()
+                "Path must be absolute: {}",
+                canonical.display()
             )));
         }
 
-        if !path.is_file() {
+        if !canonical.is_file() {
             return Err(PipelineError::Validation(format!(
                 "Path is not a file: {}",
-                path.display()
+                canonical.display()
             )));
         }
 
@@ -108,6 +117,34 @@ impl Validator {
             format!("{}...", &text[..max_length])
         }
     }
+
+    pub fn validate_within_base_dir(path: &Path, base_dir: &Path) -> Result<()> {
+        let canonical_path = fs::canonicalize(path).map_err(|e| {
+            PipelineError::Validation(format!(
+                "Cannot canonicalize path {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        let canonical_base = fs::canonicalize(base_dir).map_err(|e| {
+            PipelineError::Validation(format!(
+                "Cannot canonicalize base dir {}: {}",
+                base_dir.display(),
+                e
+            ))
+        })?;
+
+        if !canonical_path.starts_with(&canonical_base) {
+            return Err(PipelineError::Validation(format!(
+                "Path traversal detected ({} outside {})",
+                canonical_path.display(),
+                canonical_base.display()
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +222,21 @@ mod tests {
             Validator::truncate_text("this is a very long text", 10),
             "this is a ..."
         );
+    }
+
+    #[test]
+    fn test_validate_within_base_dir() {
+        let base = TempDir::new().unwrap();
+        let file_path = base.path().join("nested/file.md");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "# Test").unwrap();
+
+        assert!(Validator::validate_within_base_dir(&file_path, base.path()).is_ok());
+
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("test.md");
+        std::fs::write(&outside_file, "# Test").unwrap();
+
+        assert!(Validator::validate_within_base_dir(&outside_file, base.path()).is_err());
     }
 }

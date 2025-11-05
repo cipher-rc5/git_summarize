@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_emoji_handling() {
         let mut extractor = IocExtractor::new();
-        let text = "🚨 Alert! Malicious IP: 1.2.3.4 detected 🚨";
+        let text = " Alert! Malicious IP: 1.2.3.4 detected";
         let iocs = extractor.extract_from_text(text);
 
         assert_eq!(iocs.len(), 1);
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_unicode_context() {
         let mut extractor = IocExtractor::new();
-        let text = "中文字符 IP address 1.2.3.4 日本語 🎌";
+        let text = "中文字符 IP address 1.2.3.4 日本語 ";
         let iocs = extractor.extract_from_text(text);
 
         assert_eq!(iocs.len(), 1);

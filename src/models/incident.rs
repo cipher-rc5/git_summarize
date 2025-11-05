@@ -56,7 +56,7 @@ impl Incident {
             .as_secs();
 
         Self {
-            document_id: String::new(), // Will be set during insertion
+            document_id: String::new(),
             title,
             date: timestamp,
             date_precision: date_precision.as_str().to_string(),

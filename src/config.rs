@@ -3,8 +3,9 @@
 // reference: https://docs.rs/config
 
 use crate::error::{PipelineError, Result};
+use dotenvy::dotenv;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -27,7 +28,9 @@ pub struct DatabaseConfig {
     pub host: String,
     pub port: u16,
     pub database: String,
+    #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
     pub password: Option<String>,
     pub batch_size: usize,
 }
@@ -49,10 +52,24 @@ pub struct ExtractionConfig {
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self> {
-        let settings = config::Config::builder()
-            .add_source(config::File::with_name(path))
-            .add_source(config::Environment::with_prefix("LAZARUS"))
+    pub fn load(path: Option<&Path>) -> Result<Self> {
+        dotenv().ok();
+
+        let mut builder = config::Config::builder();
+
+        if let Some(path) = path {
+            builder = builder.add_source(config::File::from(path));
+        } else {
+            builder = builder.add_source(config::File::from(Path::new("config/default.toml")));
+        }
+
+        builder = builder.add_source(
+            config::Environment::with_prefix("LAZARUS")
+                .separator("__")
+                .try_parsing(true),
+        );
+
+        let settings = builder
             .build()
             .map_err(|e| PipelineError::Config(e.to_string()))?;
 

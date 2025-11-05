@@ -2,6 +2,7 @@
 // description: Utility functions module exports
 // reference: Internal module structure
 
+pub mod logging;
 pub mod template;
 pub mod validation;
 

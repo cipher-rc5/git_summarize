@@ -2,6 +2,7 @@
 // description: Progress tracking and statistics reporting for pipeline execution
 // reference: Uses indicatif for progress bars and tracks processing metrics
 
+use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -66,22 +67,14 @@ pub struct ProgressTracker {
 
 impl ProgressTracker {
     pub fn new(total_files: usize) -> Self {
+        Self::with_color(total_files, true)
+    }
+
+    pub fn with_color(total_files: usize, colored: bool) -> Self {
         let multi_progress = MultiProgress::new();
 
-        let main_bar = multi_progress.add(ProgressBar::new(total_files as u64));
-        main_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)")
-                .expect("Failed to create progress bar template")
-                .progress_chars("=>-"),
-        );
-
-        let detail_bar = multi_progress.add(ProgressBar::new(0));
-        detail_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("{msg}")
-                .expect("Failed to create detail bar template"),
-        );
+        let main_bar = create_progress_bar(&multi_progress, total_files as u64, colored);
+        let detail_bar = create_detail_bar(&multi_progress, colored);
 
         Self {
             main_bar,
@@ -174,6 +167,46 @@ impl ProgressTracker {
 impl Drop for ProgressTracker {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+fn create_progress_bar(multi_progress: &MultiProgress, total: u64, colored: bool) -> ProgressBar {
+    let bar = multi_progress.add(ProgressBar::new(total));
+    if colored {
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}",
+                )
+                .expect("Failed to create progress bar template")
+                .progress_chars("█▓▒░"),
+        );
+    } else {
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner} [{elapsed_precise}] [{bar:40}] {pos}/{len} ({eta}) {msg}")
+                .expect("Failed to create progress bar template")
+                .progress_chars("=>-"),
+        );
+    }
+    bar
+}
+
+fn create_detail_bar(multi_progress: &MultiProgress, _colored: bool) -> ProgressBar {
+    let bar = multi_progress.add(ProgressBar::new(0));
+    let style = ProgressStyle::default_bar()
+        .template("{msg}")
+        .expect("Failed to create detail bar template");
+    bar.set_style(style);
+    bar
+}
+
+#[allow(dead_code)]
+pub fn log_phase(phase: &str, colored: bool) {
+    if colored {
+        println!("\n{} {}\n", "▶".cyan().bold(), phase.bright_white().bold());
+    } else {
+        println!("\n> {}\n", phase);
     }
 }
 

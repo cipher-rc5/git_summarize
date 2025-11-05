@@ -50,11 +50,12 @@ impl FileTemplate {
 
         for line in lines {
             if let Some(stripped) = line.strip_prefix("// ")
-                && let Some(colon_pos) = stripped.find(':') {
-                    let key = stripped[..colon_pos].trim().to_string();
-                    let value = stripped[colon_pos + 1..].trim().to_string();
-                    map.insert(key, value);
-                }
+                && let Some(colon_pos) = stripped.find(':')
+            {
+                let key = stripped[..colon_pos].trim().to_string();
+                let value = stripped[colon_pos + 1..].trim().to_string();
+                map.insert(key, value);
+            }
         }
 
         if map.is_empty() { None } else { Some(map) }

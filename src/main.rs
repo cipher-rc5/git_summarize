@@ -3,22 +3,23 @@
 // reference: Application bootstrap and orchestration
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+use futures::stream::{self, StreamExt};
 use lazarus_ingest::{
     BatchInserter, ClickHouseClient, Config, CryptoExtractor, FileClassifier, FileScanner,
-    IncidentExtractor, IocExtractor, MarkdownNormalizer, MarkdownParser, RepositorySync,
-    SchemaManager, Validator,
+    IncidentExtractor, IocExtractor, JsonExporter, MarkdownNormalizer, MarkdownParser,
+    RepositorySync, SchemaManager, Validator,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{Level, error, info, warn};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(name = "lazarus_ingest")]
 #[command(author = "cipher")]
 #[command(version = "0.1.0")]
-#[command(about = "Ingestion pipeline for Lazarus/BlueNoroff threat research", long_about = None)]
+#[command(about = "ingestion pipeline for Lazarus/BlueNoroff threat research", long_about = None)]
 struct Cli {
     #[arg(
         short,
@@ -28,8 +29,11 @@ struct Cli {
     )]
     config: PathBuf,
 
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    color: bool,
+
+    #[arg(short, long, action = ArgAction::SetTrue)]
+    verbose: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -64,22 +68,42 @@ enum Commands {
         #[arg(long)]
         confirm: bool,
     },
+
+    Export {
+        #[arg(short, long, default_value = "./exports")]
+        output: PathBuf,
+
+        #[arg(short, long)]
+        pretty: bool,
+
+        #[arg(long)]
+        document_hash: Option<String>,
+
+        #[arg(long)]
+        query: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    setup_logging(cli.verbose);
+    lazarus_ingest::utils::logging::init_logger(cli.color, cli.verbose);
 
     info!("Lazarus BlueNoroff Research Ingestion Pipeline");
     info!("Loading configuration from: {}", cli.config.display());
 
     let config = if cli.config.exists() {
-        Config::from_file(cli.config.to_str().unwrap()).context("Failed to load configuration")?
+        Config::load(Some(cli.config.as_path())).context("Failed to load configuration")?
     } else {
-        warn!("Config file not found, using default configuration");
-        Config::default_config()
+        warn!(
+            "Config file {} not found, using default configuration",
+            cli.config.display()
+        );
+        Config::load(None).unwrap_or_else(|e| {
+            warn!("Falling back to built-in defaults: {}", e);
+            Config::default_config()
+        })
     };
 
     match cli.command {
@@ -102,27 +126,17 @@ async fn main() -> Result<()> {
         Commands::Reset { confirm } => {
             cmd_reset(&config, confirm).await?;
         }
+        Commands::Export {
+            output,
+            pretty,
+            document_hash,
+            query,
+        } => {
+            cmd_export(&config, output, pretty, document_hash, query).await?;
+        }
     }
 
     Ok(())
-}
-
-fn setup_logging(verbosity: u8) {
-    let level = match verbosity {
-        0 => Level::INFO,
-        1 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_file(true)
-        .with_line_number(true)
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 }
 
 async fn cmd_sync(config: &Config, force: bool) -> Result<()> {
@@ -197,57 +211,113 @@ async fn cmd_ingest(
     Ok(())
 }
 
+async fn cmd_export(
+    config: &Config,
+    output: PathBuf,
+    pretty: bool,
+    document_hash: Option<String>,
+    query: Option<String>,
+) -> Result<()> {
+    info!("Initializing JSON export");
+
+    let client = ClickHouseClient::new(config.database.clone())
+        .context("Failed to create ClickHouse client")?;
+
+    if !client.ping().await? {
+        error!("Cannot connect to ClickHouse");
+        return Err(anyhow::anyhow!("Database connection failed"));
+    }
+
+    let exporter = JsonExporter::new(output)?;
+
+    if let Some(hash) = document_hash {
+        exporter.export_single(&client, &hash, pretty).await?;
+    } else if let Some(custom_query) = query {
+        let count = exporter
+            .export_filtered(&client, &custom_query, pretty)
+            .await?;
+        info!("Exported {} documents with custom query", count);
+    } else {
+        let manifest = exporter.export_all(&client, pretty).await?;
+        info!("Export complete: {} files generated", manifest.files.len());
+    }
+
+    Ok(())
+}
+
 async fn process_files(
     client: &ClickHouseClient,
     config: &Config,
     files: Vec<lazarus_ingest::ScannedFile>,
 ) -> Result<usize> {
-    let inserter = BatchInserter::new(client);
-    let classifier = FileClassifier::new();
-    let markdown_parser = MarkdownParser::new();
-    let normalizer = MarkdownNormalizer::new();
+    let client = Arc::new(client.clone());
+    let classifier = Arc::new(FileClassifier::new());
+    let markdown_parser = Arc::new(MarkdownParser::new());
+    let normalizer = Arc::new(MarkdownNormalizer::new());
+    let config = Arc::new(config.clone());
+
+    let parallel_workers = config.pipeline.parallel_workers.max(1);
+
+    let results = stream::iter(files.into_iter().map(|file| {
+        let client = Arc::clone(&client);
+        let classifier = Arc::clone(&classifier);
+        let markdown_parser = Arc::clone(&markdown_parser);
+        let normalizer = Arc::clone(&normalizer);
+        let config = Arc::clone(&config);
+
+        async move {
+            let file_start = Instant::now();
+            let inserter = BatchInserter::new(client.as_ref());
+
+            let result = process_single_file(
+                &inserter,
+                classifier.as_ref(),
+                markdown_parser.as_ref(),
+                normalizer.as_ref(),
+                config.as_ref(),
+                &file,
+            )
+            .await;
+
+            let processing_time = file_start.elapsed().as_millis() as u32;
+            let status = if result.is_ok() { "success" } else { "failed" };
+            let error_message = match &result {
+                Ok(_) => String::new(),
+                Err(err) => err.to_string(),
+            };
+
+            if let Err(log_err) = inserter
+                .log_processing(
+                    &file.path.display().to_string(),
+                    status,
+                    &error_message,
+                    processing_time,
+                )
+                .await
+            {
+                error!(
+                    "Failed to log processing result for {}: {}",
+                    file.relative_path, log_err
+                );
+            }
+
+            (file, result, processing_time)
+        }
+    }))
+    .buffer_unordered(parallel_workers)
+    .collect::<Vec<_>>()
+    .await;
 
     let mut total_processed = 0;
 
-    for file in files {
-        let file_start = Instant::now();
-
-        match process_single_file(
-            &inserter,
-            &classifier,
-            &markdown_parser,
-            &normalizer,
-            config,
-            &file,
-        )
-        .await
-        {
+    for (file, result, processing_time) in results {
+        match result {
             Ok(_) => {
                 total_processed += 1;
-                let processing_time = file_start.elapsed().as_millis() as u32;
                 info!("Processed: {} ({} ms)", file.relative_path, processing_time);
-
-                let _ = inserter
-                    .log_processing(
-                        &file.path.display().to_string(),
-                        "success",
-                        "",
-                        processing_time,
-                    )
-                    .await;
             }
             Err(e) => {
-                let processing_time = file_start.elapsed().as_millis() as u32;
                 error!("Failed to process {}: {}", file.relative_path, e);
-
-                let _ = inserter
-                    .log_processing(
-                        &file.path.display().to_string(),
-                        "failed",
-                        &e.to_string(),
-                        processing_time,
-                    )
-                    .await;
             }
         }
     }

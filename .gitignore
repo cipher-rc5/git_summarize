@@ -281,6 +281,7 @@ metadata/
 
 # Project-specific
 # Add any custom directories or files specific to your project
+tests
 /data_repo
 /_dev
 /docs

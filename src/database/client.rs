@@ -7,6 +7,7 @@ use crate::error::{PipelineError, Result};
 use clickhouse::Client;
 use tracing::{debug, info};
 
+#[derive(Clone)]
 pub struct ClickHouseClient {
     client: Client,
     config: DatabaseConfig,
@@ -55,14 +56,10 @@ impl ClickHouseClient {
     }
 
     pub async fn database_exists(&self) -> Result<bool> {
-        let query = format!(
-            "SELECT count() FROM system.databases WHERE name = '{}'",
-            self.config.database
-        );
-
         let count: u64 = self
             .client
-            .query(&query)
+            .query("SELECT count() FROM system.databases WHERE name = ?")
+            .bind(&self.config.database)
             .fetch_one()
             .await
             .map_err(PipelineError::Database)?;
@@ -71,14 +68,11 @@ impl ClickHouseClient {
     }
 
     pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let query = format!(
-            "SELECT count() FROM system.tables WHERE database = '{}' AND name = '{}'",
-            self.config.database, table_name
-        );
-
         let count: u64 = self
             .client
-            .query(&query)
+            .query("SELECT count() FROM system.tables WHERE database = ? AND name = ?")
+            .bind(&self.config.database)
+            .bind(table_name)
             .fetch_one()
             .await
             .map_err(PipelineError::Database)?;

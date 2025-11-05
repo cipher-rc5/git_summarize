@@ -49,39 +49,40 @@ impl FileScanner {
 
             if let Some(extension) = path.extension()
                 && extension == "md"
-                    && let Ok(metadata) = entry.metadata() {
-                        let size = metadata.len();
-                        let max_size = (self.config.max_file_size_mb * 1024 * 1024) as u64;
+                && let Ok(metadata) = entry.metadata()
+            {
+                let size = metadata.len();
+                let max_size = (self.config.max_file_size_mb * 1024 * 1024) as u64;
 
-                        if size > max_size {
-                            debug!(
-                                "Skipping large file ({} MB): {}",
-                                size / 1024 / 1024,
-                                path.display()
-                            );
-                            continue;
-                        }
+                if size > max_size {
+                    debug!(
+                        "Skipping large file ({} MB): {}",
+                        size / 1024 / 1024,
+                        path.display()
+                    );
+                    continue;
+                }
 
-                        let modified = metadata
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
 
-                        let relative_path = path
-                            .strip_prefix(root)
-                            .unwrap_or(path)
-                            .to_string_lossy()
-                            .to_string();
+                let relative_path = path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
 
-                        files.push(ScannedFile {
-                            path: path.to_path_buf(),
-                            relative_path,
-                            size,
-                            modified,
-                        });
-                    }
+                files.push(ScannedFile {
+                    path: path.to_path_buf(),
+                    relative_path,
+                    size,
+                    modified,
+                });
+            }
         }
 
         info!("Found {} markdown files", files.len());

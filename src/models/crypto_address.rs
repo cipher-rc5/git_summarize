@@ -64,7 +64,7 @@ impl CryptoAddress {
         Self {
             address,
             chain: chain_type.as_str().to_string(),
-            document_id: String::new(), // Will be set during insertion
+            document_id: String::new(),
             file_path,
             context,
             attribution,

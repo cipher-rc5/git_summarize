@@ -1,11 +1,12 @@
 // file: src/lib.rs
-// description: Library entry point and public API exports
+// description: library entry point and public api exports
 // reference: Rust library patterns
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/readme.md"))]
 
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod exporter;
 pub mod extractor;
 pub mod models;
 pub mod parser;
@@ -16,6 +17,7 @@ pub mod utils;
 pub use config::{Config, DatabaseConfig, ExtractionConfig, PipelineConfig, RepositoryConfig};
 pub use database::{BatchInserter, ClickHouseClient, InsertStats, SchemaManager};
 pub use error::{PipelineError, Result};
+pub use exporter::json::{ExportManifest, ExportedDocument, JsonExporter};
 pub use extractor::{CryptoExtractor, IncidentExtractor, IocExtractor};
 pub use models::{
     ChainType, CryptoAddress, DatePrecision, Document, Incident, IncidentBuilder, Ioc, IocType,
