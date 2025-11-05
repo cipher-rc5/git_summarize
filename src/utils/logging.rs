@@ -1,5 +1,5 @@
 // file: src/utils/logging.rs
-// description: Tracing subscriber initialization with optional ANSI coloring
+// description: tracing subscriber initialization with optional ansi coloring
 
 use colored::*;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};

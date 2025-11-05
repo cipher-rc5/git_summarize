@@ -1,5 +1,5 @@
 // file: src/parser/markdown.rs
-// description: Markdown parsing with pulldown-cmark
+// description: markdown parsing with pulldown-cmark
 // reference: https://docs.rs/pulldown-cmark
 
 use crate::error::Result;

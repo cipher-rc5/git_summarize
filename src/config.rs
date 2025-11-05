@@ -1,5 +1,5 @@
 // file: src/config.rs
-// description: Application configuration management with TOML support
+// description: application configuration management with toml support
 // reference: https://docs.rs/config
 
 use crate::error::{PipelineError, Result};

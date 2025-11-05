@@ -1,6 +1,6 @@
 // file: src/models/ioc.rs
-// description: Indicators of Compromise model for threat intelligence
-// reference: STIX IOC standards
+// description: indicators of compromise model for threat intelligence
+// reference: stix ioc standards
 
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};

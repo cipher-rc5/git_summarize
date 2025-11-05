@@ -1,6 +1,6 @@
 // file: src/utils/validation.rs
-// description: Data validation utilities and helpers
-// reference: Input validation patterns
+// description: data validation utilities and helpers
+// reference: input validation patterns
 
 use crate::error::{PipelineError, Result};
 use std::fs;

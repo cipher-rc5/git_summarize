@@ -1,5 +1,5 @@
 // file: src/extractor/patterns.rs
-// description: Compiled regex patterns for entity extraction
+// description: compiled regex patterns for entity extraction
 // reference: https://docs.rs/regex
 
 use lazy_static::lazy_static;

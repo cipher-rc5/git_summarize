@@ -1,6 +1,6 @@
 // file: src/extractor/mod.rs
-// description: Entity extraction module exports
-// reference: Internal module structure
+// description: entity extraction module exports
+// reference: internal module structure
 
 pub mod crypto;
 pub mod incident;

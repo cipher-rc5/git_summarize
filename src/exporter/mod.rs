@@ -1,4 +1,4 @@
 // file: src/exporter/mod.rs
-// description: Data export module root
+// description: data export module root
 
 pub mod json;

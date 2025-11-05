@@ -1,6 +1,6 @@
 // file: src/parser/normalizer.rs
-// description: Markdown normalization for structural consistency
-// reference: Markdown specification
+// description: markdown normalization for structural consistency
+// reference: markdown specification
 
 use crate::error::Result;
 

@@ -1,6 +1,6 @@
 // file: src/models/crypto_address.rs
-// description: Cryptocurrency address model with chain detection
-// reference: Blockchain address formats
+// description: cryptocurrency address model with chain detection
+// reference: blockchain address formats
 
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};

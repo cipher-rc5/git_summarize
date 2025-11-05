@@ -1,6 +1,6 @@
 // file: src/utils/mod.rs
-// description: Utility functions module exports
-// reference: Internal module structure
+// description: utility functions module exports
+// reference: internal module structure
 
 pub mod logging;
 pub mod template;

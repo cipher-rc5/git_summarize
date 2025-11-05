@@ -1,5 +1,5 @@
 // file: src/exporter/json.rs
-// description: JSON export utilities for ClickHouse data
+// description: json export utilities for clickhouse data
 
 use crate::database::client::ClickHouseClient;
 use crate::error::{PipelineError, Result};
@@ -304,9 +304,10 @@ impl JsonExporter {
             .await?;
 
         if let Some(id) = from_incidents.into_iter().next()
-            && !id.is_empty() {
-                return Ok(Some(id));
-            }
+            && !id.is_empty()
+        {
+            return Ok(Some(id));
+        }
 
         let from_addresses: Vec<String> = client
             .get_client()
@@ -316,9 +317,10 @@ impl JsonExporter {
             .await?;
 
         if let Some(id) = from_addresses.into_iter().next()
-            && !id.is_empty() {
-                return Ok(Some(id));
-            }
+            && !id.is_empty()
+        {
+            return Ok(Some(id));
+        }
 
         Ok(None)
     }

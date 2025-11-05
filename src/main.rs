@@ -1,6 +1,6 @@
 // file: src/main.rs
-// description: CLI application entry point with command handling
-// reference: Application bootstrap and orchestration
+// description: commandline application entry point with command handling
+// reference: application bootstrap and orchestration
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
@@ -19,7 +19,7 @@ use tracing::{error, info, warn};
 #[command(name = "lazarus_ingest")]
 #[command(author = "cipher")]
 #[command(version = "0.1.0")]
-#[command(about = "ingestion pipeline for Lazarus/BlueNoroff threat research", long_about = None)]
+#[command(about = "ingest pipeline for lazarus threat research", long_about = None)]
 struct Cli {
     #[arg(
         short,
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
 
     lazarus_ingest::utils::logging::init_logger(cli.color, cli.verbose);
 
-    info!("Lazarus BlueNoroff Research Ingestion Pipeline");
+    info!("Lazarus Ingestion Pipeline");
     info!("Loading configuration from: {}", cli.config.display());
 
     let config = if cli.config.exists() {

@@ -1,6 +1,6 @@
 // file: src/repository/classifier.rs
-// description: File classification and attribution extraction
-// reference: Internal classification logic
+// description: file classification and attribution extraction
+// reference: internal classification logic
 
 use std::path::Path;
 

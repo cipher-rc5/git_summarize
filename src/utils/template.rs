@@ -1,6 +1,6 @@
 // file: src/utils/template.rs
-// description: File header template generation and formatting
-// reference: Internal code standards
+// description: file header template generation and formatting
+// reference: internal code standards
 
 use std::collections::HashMap;
 

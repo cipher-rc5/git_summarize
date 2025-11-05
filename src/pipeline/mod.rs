@@ -1,6 +1,6 @@
 // file: src/pipeline/mod.rs
-// description: Pipeline module exports and public API
-// reference: Lazarus BlueNoroff ingestion pipeline orchestration
+// description: pipeline module exports and public api
+// reference: lazarus ingest pipeline orchestration
 
 mod orchestrator;
 mod processor;

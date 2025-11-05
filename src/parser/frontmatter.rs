@@ -1,5 +1,5 @@
 // file: src/parser/frontmatter.rs
-// description: YAML frontmatter extraction from markdown
+// description: yaml frontmatter extraction from markdown
 // reference: https://docs.rs/yaml-rust
 
 use crate::error::{PipelineError, Result};

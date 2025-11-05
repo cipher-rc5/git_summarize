@@ -1,6 +1,6 @@
 // file: src/models/incident.rs
-// description: Incident model representing cyber attacks and thefts
-// reference: Threat intelligence incident tracking
+// description: incident model representing cyber attacks and thefts
+// reference: threat intelligence incident tracking
 
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};

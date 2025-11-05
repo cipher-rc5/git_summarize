@@ -1,6 +1,6 @@
 // file: src/database/schema.rs
 // description: database schema management and migrations
-// reference: clickHouse ddl operations
+// reference: clickhouse ddl operations
 
 use crate::database::client::ClickHouseClient;
 use crate::error::Result;

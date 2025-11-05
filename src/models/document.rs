@@ -1,6 +1,6 @@
 // file: src/models/document.rs
-// description: Core document model with validation and serialization
-// reference: Internal data structures
+// description: core document model with validation and serialization
+// reference: internal data structures
 
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};

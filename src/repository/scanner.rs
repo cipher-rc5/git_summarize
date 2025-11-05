@@ -1,5 +1,5 @@
 // file: src/repository/scanner.rs
-// description: Directory walking and file discovery with filtering
+// description: directory walking and file discovery with filtering
 // reference: https://docs.rs/walkdir
 
 use crate::config::PipelineConfig;

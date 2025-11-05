@@ -1,6 +1,6 @@
 // file: src/models/mod.rs
-// description: Data models module exports
-// reference: Internal module structure
+// description: data models module exports
+// reference: internal module structure
 
 pub mod crypto_address;
 pub mod document;

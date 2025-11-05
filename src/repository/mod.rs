@@ -1,6 +1,6 @@
 // file: src/repository/mod.rs
-// description: Repository operations module exports
-// reference: Internal module structure
+// description: repository operations module exports
+// reference: internal module structure
 
 pub mod classifier;
 pub mod scanner;

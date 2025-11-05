@@ -1,6 +1,6 @@
 // file: src/pipeline/progress.rs
-// description: Progress tracking and statistics reporting for pipeline execution
-// reference: Uses indicatif for progress bars and tracks processing metrics
+// description: progress tracking and statistics reporting for pipeline execution
+// reference: uses indicatif for progress bars and tracks processing metrics
 
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};

@@ -1,6 +1,6 @@
 // file: src/lib.rs
 // description: library entry point and public api exports
-// reference: Rust library patterns
+// reference: rust library patterns
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/readme.md"))]
 
 pub mod config;

@@ -1,6 +1,6 @@
 // file: src/parser/mod.rs
-// description: Markdown parsing module exports
-// reference: Internal module structure
+// description: markdown parsing module exports
+// reference: internal module structure
 
 pub mod frontmatter;
 pub mod markdown;

@@ -1,10 +1,11 @@
 // file: src/repository/sync.rs
-// description: Repository synchronization using git2
-// reference: https://docs.rs/git2
+// description: repository synchronization using gix (pure rust git implementation)
+// reference: https://docs.rs/gix
 
 use crate::config::RepositoryConfig;
 use crate::error::{PipelineError, Result};
-use git2::{FetchOptions, RemoteCallbacks, Repository};
+use gix::remote::Name;
+use gix::repository::merge_base;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -34,104 +35,116 @@ impl RepositorySync {
     fn clone(&self) -> Result<()> {
         info!("Cloning repository from {}", self.config.source_url);
 
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.transfer_progress(|stats| {
-            if stats.received_objects() == stats.total_objects() {
-                debug!(
-                    "Resolving deltas {}/{}",
-                    stats.indexed_deltas(),
-                    stats.total_deltas()
-                );
-            } else if stats.total_objects() > 0 {
-                debug!(
-                    "Received {}/{} objects",
-                    stats.received_objects(),
-                    stats.total_objects()
-                );
-            }
-            true
-        });
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
+        let mut prepare =
+            gix::prepare_clone(self.config.source_url.clone(), &self.config.local_path)?;
 
         if !self.config.branch.is_empty() && self.config.branch != "main" {
-            builder.branch(&self.config.branch);
+            let branch_ref = <&gix::refs::PartialNameRef>::try_from(self.config.branch.as_str())
+                .map_err(|e| {
+                    PipelineError::RepositorySync(format!("Invalid branch name: {}", e))
+                })?;
+            prepare = prepare
+                .with_ref_name(Some(branch_ref))
+                .expect("with_ref_name should not fail");
         }
 
-        builder
-            .clone(&self.config.source_url, &self.config.local_path)
-            .map_err(|e| PipelineError::RepositorySync(format!("Clone failed: {}", e)))?;
+        let (mut checkout, _outcome) = prepare
+            .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+            .map_err(|e| {
+                PipelineError::RepositorySync(format!("Failed to fetch and checkout: {}", e))
+            })?;
+
+        let (_repo, _outcome) = checkout
+            .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+            .map_err(|e| {
+                PipelineError::RepositorySync(format!("Failed to checkout main worktree: {}", e))
+            })?;
 
         info!("Repository cloned successfully");
         Ok(())
     }
 
     fn pull(&self, path: &Path) -> Result<()> {
-        let repo = Repository::open(path)
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to open repo: {}", e)))?;
+        let repo = gix::open(path)?;
 
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to find remote: {}", e)))?;
-
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.transfer_progress(|stats| {
-            if stats.received_objects() == stats.total_objects() {
-                debug!(
-                    "Resolving deltas {}/{}",
-                    stats.indexed_deltas(),
-                    stats.total_deltas()
-                );
-            }
-            true
-        });
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-
-        info!("Fetching latest changes");
-        remote
-            .fetch(&[&self.config.branch], Some(&mut fetch_options), None)
-            .map_err(|e| PipelineError::RepositorySync(format!("Fetch failed: {}", e)))?;
-
-        let fetch_head = repo.find_reference("FETCH_HEAD").map_err(|e| {
-            PipelineError::RepositorySync(format!("Failed to find FETCH_HEAD: {}", e))
+        let remote = repo.find_fetch_remote(None).map_err(|e| {
+            PipelineError::RepositorySync(format!("Failed to resolve remote: {}", e))
         })?;
 
-        let fetch_commit = repo
-            .reference_to_annotated_commit(&fetch_head)
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to get commit: {}", e)))?;
+        info!("Fetching latest changes");
 
-        let analysis = repo
-            .merge_analysis(&[&fetch_commit])
-            .map_err(|e| PipelineError::RepositorySync(format!("Merge analysis failed: {}", e)))?;
-
-        if analysis.0.is_fast_forward() {
-            info!("Fast-forward merge");
-            let refname = format!("refs/heads/{}", self.config.branch);
-            let mut reference = repo.find_reference(&refname).map_err(|e| {
-                PipelineError::RepositorySync(format!("Failed to find reference: {}", e))
+        let outcome = remote
+            .connect(gix::remote::Direction::Fetch)?
+            .prepare_fetch(gix::progress::Discard, Default::default())?
+            .receive(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+            .map_err(|e| {
+                PipelineError::RepositorySync(format!("Failed to fetch from remote: {}", e))
             })?;
 
-            reference
-                .set_target(fetch_commit.id(), "Fast-Forward")
+        debug!("Fetched {} refs", outcome.ref_map.mappings.len());
+
+        let remote_name = remote_symbolic_name(&remote).unwrap_or_else(|| "origin".to_string());
+
+        let local_branch_ref = format!("refs/heads/{}", self.config.branch);
+        let mut local_ref = repo.find_reference(&local_branch_ref).map_err(|e| {
+            PipelineError::GitReference(format!(
+                "Failed to open local branch {local_branch_ref}: {e}"
+            ))
+        })?;
+        let local_commit_id = local_ref
+            .peel_to_id()
+            .map_err(|e| {
+                PipelineError::GitReference(format!(
+                    "Failed to peel local branch {local_branch_ref}: {e}"
+                ))
+            })?
+            .detach();
+
+        let remote_branch_ref = format!("refs/remotes/{}/{}", remote_name, self.config.branch);
+        let mut remote_ref = repo.find_reference(&remote_branch_ref).map_err(|e| {
+            PipelineError::GitReference(format!(
+                "Failed to open remote tracking branch {remote_branch_ref}: {e}"
+            ))
+        })?;
+        let remote_commit_id = remote_ref
+            .peel_to_id()
+            .map_err(|e| {
+                PipelineError::GitReference(format!(
+                    "Failed to peel remote tracking branch {remote_branch_ref}: {e}"
+                ))
+            })?
+            .detach();
+
+        if local_commit_id == remote_commit_id {
+            info!("Repository is up to date");
+            return Ok(());
+        }
+
+        let is_fast_forward = match repo.merge_base(remote_commit_id, local_commit_id) {
+            Ok(base) => base == local_commit_id,
+            Err(merge_base::Error::NotFound { .. }) => {
+                warn!("No merge base found; manual merge required");
+                false
+            }
+            Err(err) => {
+                return Err(PipelineError::RepositorySync(format!(
+                    "Failed to compute merge-base: {err}"
+                )));
+            }
+        };
+
+        if is_fast_forward {
+            info!("Fast-forward merge");
+
+            local_ref
+                .set_target_id(remote_commit_id, "Fast-forward")
                 .map_err(|e| {
-                    PipelineError::RepositorySync(format!("Failed to set target: {}", e))
+                    PipelineError::RepositorySync(format!(
+                        "Failed to update local branch {local_branch_ref}: {e}"
+                    ))
                 })?;
 
-            repo.set_head(&refname)
-                .map_err(|e| PipelineError::RepositorySync(format!("Failed to set HEAD: {}", e)))?;
-
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-                .map_err(|e| PipelineError::RepositorySync(format!("Checkout failed: {}", e)))?;
-
             info!("Repository updated successfully");
-        } else if analysis.0.is_up_to_date() {
-            info!("Repository is up to date");
         } else {
             warn!("Repository requires manual merge");
         }
@@ -140,18 +153,22 @@ impl RepositorySync {
     }
 
     pub fn get_current_commit(&self) -> Result<String> {
-        let repo = Repository::open(&self.config.local_path)
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to open repo: {}", e)))?;
+        let repo = gix::open(&self.config.local_path)?;
 
-        let head = repo
-            .head()
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to get HEAD: {}", e)))?;
+        let mut head = repo.head()?;
 
-        let commit = head
-            .peel_to_commit()
-            .map_err(|e| PipelineError::RepositorySync(format!("Failed to get commit: {}", e)))?;
+        let commit = head.peel_to_commit().map_err(|e| {
+            PipelineError::RepositorySync(format!("Failed to peel HEAD to commit: {}", e))
+        })?;
 
         Ok(commit.id().to_string())
+    }
+}
+
+fn remote_symbolic_name(remote: &gix::Remote<'_>) -> Option<String> {
+    match remote.name()? {
+        Name::Symbol(symbol) => Some(symbol.to_string()),
+        Name::Url(_) => None,
     }
 }
 
