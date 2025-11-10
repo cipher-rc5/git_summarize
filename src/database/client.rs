@@ -4,8 +4,9 @@
 
 use crate::config::DatabaseConfig;
 use crate::error::{PipelineError, Result};
+use crate::models::SearchResult;
 use lancedb::{connect, Connection, Table};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct LanceDbClient {
@@ -124,6 +125,153 @@ impl LanceDbClient {
         // LanceDB delete doesn't return count directly, so we'll return success
         info!("Successfully deleted documents for repository: {}", repository_url);
         Ok(0) // LanceDB doesn't return deletion count in this API
+    }
+
+    /// Search for documents by vector similarity
+    ///
+    /// # Arguments
+    /// * `query_embedding` - The query vector to search for
+    /// * `limit` - Maximum number of results to return (default: 10)
+    /// * `repository_filter` - Optional repository URL to filter results
+    ///
+    /// # Returns
+    /// Vector of SearchResult ordered by similarity (highest first)
+    pub async fn vector_search(
+        &self,
+        query_embedding: Vec<f32>,
+        limit: usize,
+        repository_filter: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
+        if !self.table_exists(&self.config.table_name).await? {
+            warn!("Table does not exist, returning empty results");
+            return Ok(Vec::new());
+        }
+
+        let table = self.get_table(&self.config.table_name).await?;
+
+        info!("Performing vector search with limit {}", limit);
+
+        // Create the search query
+        let mut query = table
+            .search(&query_embedding)
+            .limit(limit);
+
+        // Add repository filter if provided
+        if let Some(repo_url) = repository_filter {
+            let filter = format!("repository_url = '{}'", repo_url);
+            query = query.filter(&filter);
+            debug!("Applied filter: {}", filter);
+        }
+
+        // Execute the search
+        let results = query
+            .execute()
+            .await
+            .map_err(|e| {
+                PipelineError::Database(format!("Vector search failed: {}", e))
+            })?;
+
+        // Convert Arrow RecordBatch results to SearchResult objects
+        let mut search_results = Vec::new();
+
+        // Use RecordBatchReader to iterate through results
+        use arrow_array::RecordBatchReader;
+        let schema = results.schema();
+
+        for batch_result in results {
+            let batch = batch_result.map_err(|e| {
+                PipelineError::Database(format!("Failed to read result batch: {}", e))
+            })?;
+
+            let num_rows = batch.num_rows();
+
+            // Extract columns
+            use arrow_array::{Array, StringArray, UInt64Array, Float32Array};
+
+            let ids = batch.column_by_name("id")
+                .ok_or_else(|| PipelineError::Database("Missing 'id' column".to_string()))?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'id' column type".to_string()))?;
+
+            let file_paths = batch.column_by_name("file_path")
+                .ok_or_else(|| PipelineError::Database("Missing 'file_path' column".to_string()))?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'file_path' column type".to_string()))?;
+
+            let relative_paths = batch.column_by_name("relative_path")
+                .ok_or_else(|| PipelineError::Database("Missing 'relative_path' column".to_string()))?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'relative_path' column type".to_string()))?;
+
+            let contents = batch.column_by_name("content")
+                .ok_or_else(|| PipelineError::Database("Missing 'content' column".to_string()))?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'content' column type".to_string()))?;
+
+            let repository_urls = batch.column_by_name("repository_url")
+                .ok_or_else(|| PipelineError::Database("Missing 'repository_url' column".to_string()))?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'repository_url' column type".to_string()))?;
+
+            let file_sizes = batch.column_by_name("file_size")
+                .ok_or_else(|| PipelineError::Database("Missing 'file_size' column".to_string()))?
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'file_size' column type".to_string()))?;
+
+            let last_modifieds = batch.column_by_name("last_modified")
+                .ok_or_else(|| PipelineError::Database("Missing 'last_modified' column".to_string()))?
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .ok_or_else(|| PipelineError::Database("Invalid 'last_modified' column type".to_string()))?;
+
+            // LanceDB returns distance score in a special column
+            let distances = batch.column_by_name("_distance")
+                .and_then(|col| col.as_any().downcast_ref::<Float32Array>());
+
+            // Convert rows to SearchResult
+            for i in 0..num_rows {
+                let id = ids.value(i).to_string();
+                let file_path = file_paths.value(i).to_string();
+                let relative_path = relative_paths.value(i).to_string();
+                let content = contents.value(i).to_string();
+                let repository_url = repository_urls.value(i).to_string();
+                let file_size = file_sizes.value(i);
+                let last_modified = last_modifieds.value(i);
+
+                // Get distance and convert to similarity score
+                let (score, distance) = if let Some(dist_array) = distances {
+                    let dist = dist_array.value(i);
+                    // Convert distance to similarity (lower distance = higher similarity)
+                    // Common approach: score = 1 / (1 + distance)
+                    let similarity = 1.0 / (1.0 + dist);
+                    (similarity, Some(dist))
+                } else {
+                    // If no distance column, use default
+                    (1.0, None)
+                };
+
+                search_results.push(SearchResult::new(
+                    id,
+                    file_path,
+                    relative_path,
+                    content,
+                    repository_url,
+                    score,
+                    distance,
+                    file_size,
+                    last_modified,
+                ));
+            }
+        }
+
+        info!("Vector search returned {} results", search_results.len());
+        Ok(search_results)
     }
 }
 

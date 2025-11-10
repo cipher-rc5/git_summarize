@@ -457,38 +457,108 @@ impl GitSummarizeMcp {
         Ok(CallToolResult::success(vec![Content::text(stats_text)]))
     }
 
-    #[tool(description = "Search for documents by content (simple text search for now)")]
+    #[tool(description = "Search for documents by semantic similarity using vector embeddings")]
     async fn search_documents(
         &self,
         #[arg(description = "Search query text")] query: String,
         #[arg(description = "Maximum number of results to return (default: 5)")] limit: Option<usize>,
+        #[arg(description = "Filter by repository URL (optional)")] repository_filter: Option<String>,
     ) -> Result<CallToolResult, McpError> {
         info!("MCP: Searching for documents with query: {}", query);
 
         self.ensure_db_connected().await?;
 
-        // TODO: Implement vector similarity search with embeddings
-        // PRODUCTION ISSUE: Search functionality is non-operational
-        // This is a CRITICAL feature gap. Current status:
-        //   - GroqEmbeddingClient exists but is NOT integrated
-        //   - BatchInserter uses dummy embeddings instead of Groq API
-        //   - LanceDB vector search is not implemented
-        // Required implementation:
-        //   1. Integrate GroqEmbeddingClient into BatchInserter
-        //   2. Implement LanceDB vector similarity query
-        //   3. Add hybrid search (vector + keyword)
-        //   4. Implement result ranking
-        // For now, return a placeholder response
+        let search_limit = limit.unwrap_or(5);
 
-        let result_text = format!(
-            "Search functionality coming soon!\n\
-             Query: {}\n\
-             Limit: {}\n\
-             \n\
-             TODO: Implement vector similarity search using LanceDB and Groq embeddings.",
+        // Get database client
+        let db_guard = self.db_client.lock().await;
+        let client = db_guard.as_ref().ok_or(McpError {
+            code: -32603,
+            message: "Database not connected".to_string(),
+            data: None,
+        })?;
+
+        // Generate embedding for the query
+        const EMBEDDING_DIM: usize = 768;
+        let query_embedding = if let Some(api_key) = client.groq_api_key() {
+            // Use Groq API for embedding
+            let groq_client = crate::database::GroqEmbeddingClient::new(
+                api_key.clone(),
+                client.groq_model().to_string(),
+            );
+
+            match groq_client.generate_embedding(&query).await {
+                Ok(embedding) => {
+                    if embedding.len() != EMBEDDING_DIM {
+                        warn!("Groq API returned embedding with dimension {}, expected {}. Using fallback.",
+                              embedding.len(), EMBEDDING_DIM);
+                        crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
+                    } else {
+                        info!("Using Groq API embedding for search query");
+                        embedding
+                    }
+                }
+                Err(e) => {
+                    warn!("Groq API embedding failed: {}. Using fallback.", e);
+                    crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
+                }
+            }
+        } else {
+            info!("No API key configured, using fallback embedding for search");
+            crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
+        };
+
+        // Perform vector search
+        let results = client
+            .vector_search(
+                query_embedding,
+                search_limit,
+                repository_filter.as_deref(),
+            )
+            .await
+            .map_err(|e| McpError {
+                code: -32603,
+                message: format!("Vector search failed: {}", e),
+                data: None,
+            })?;
+
+        drop(db_guard);
+
+        // Format results
+        if results.is_empty() {
+            let result_text = format!(
+                "No results found for query: {}\n\
+                 \n\
+                 Try:\n\
+                 - Using different search terms\n\
+                 - Removing repository filter\n\
+                 - Checking that documents have been ingested",
+                query
+            );
+            return Ok(CallToolResult::success(vec![Content::text(result_text)]));
+        }
+
+        let mut result_text = format!(
+            "Search Results for: \"{}\"\n\
+             Found {} result(s)\n\
+             \n",
             query,
-            limit.unwrap_or(5)
+            results.len()
         );
+
+        for (idx, result) in results.iter().enumerate() {
+            result_text.push_str(&format!(
+                "{}. {} (Score: {:.4})\n\
+                 Repository: {}\n\
+                 Preview: {}\n\
+                 \n",
+                idx + 1,
+                result.relative_path,
+                result.score,
+                result.repository_url,
+                result.format_summary(200).trim()
+            ));
+        }
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
     }

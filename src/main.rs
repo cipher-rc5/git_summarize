@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    mcp::GitSummarizeMcp, BatchInserter, Config, FileClassifier, FileScanner, JsonExporter,
-    LanceDbClient, MarkdownNormalizer, MarkdownParser, RepositorySync, SchemaManager, Validator,
+    mcp::GitSummarizeMcp, BatchInserter, Config, FileClassifier, FileScanner,
+    GroqEmbeddingClient, JsonExporter, LanceDbClient, MarkdownNormalizer, MarkdownParser,
+    RepositorySync, SchemaManager, Validator,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,6 +88,18 @@ enum Commands {
         #[arg(long, default_value = "stdio")]
         transport: String,
     },
+
+    /// Search for documents by semantic similarity
+    Search {
+        /// Search query text
+        query: String,
+
+        #[arg(short, long, default_value_t = 5)]
+        limit: usize,
+
+        #[arg(short, long)]
+        repository: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -141,6 +154,13 @@ async fn main() -> Result<()> {
         }
         Commands::Mcp { transport } => {
             cmd_mcp(&config, &transport).await?;
+        }
+        Commands::Search {
+            query,
+            limit,
+            repository,
+        } => {
+            cmd_search(&config, &query, limit, repository.as_deref()).await?;
         }
     }
 
@@ -475,6 +495,102 @@ async fn cmd_mcp(config: &Config, transport: &str) -> Result<()> {
     // Run MCP server over stdio
     info!("Starting stdio transport...");
     rmcp::handler::server::stdio::run_server(mcp_server.get_tool_router().clone()).await?;
+
+    Ok(())
+}
+
+async fn cmd_search(
+    config: &Config,
+    query: &str,
+    limit: usize,
+    repository_filter: Option<&str>,
+) -> Result<()> {
+    info!("Searching for: {}", query);
+
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
+
+    if !client.ping().await? {
+        error!("Cannot connect to LanceDB");
+        return Err(anyhow::anyhow!("Database connection failed"));
+    }
+
+    // Generate embedding for query
+    const EMBEDDING_DIM: usize = 768;
+    let query_embedding = if let Some(api_key) = &config.database.groq_api_key {
+        info!("Using Groq API for query embedding");
+        let groq_client = GroqEmbeddingClient::new(
+            api_key.clone(),
+            config.database.groq_model.clone(),
+        );
+
+        match groq_client.generate_embedding(query).await {
+            Ok(embedding) => {
+                if embedding.len() != EMBEDDING_DIM {
+                    warn!(
+                        "Groq API returned embedding with dimension {}, expected {}. Using fallback.",
+                        embedding.len(),
+                        EMBEDDING_DIM
+                    );
+                    GroqEmbeddingClient::generate_fallback_embedding(query, EMBEDDING_DIM)
+                } else {
+                    embedding
+                }
+            }
+            Err(e) => {
+                warn!("Groq API embedding failed: {}. Using fallback.", e);
+                GroqEmbeddingClient::generate_fallback_embedding(query, EMBEDDING_DIM)
+            }
+        }
+    } else {
+        info!("No API key configured, using fallback embedding");
+        GroqEmbeddingClient::generate_fallback_embedding(query, EMBEDDING_DIM)
+    };
+
+    // Perform search
+    let results = client
+        .vector_search(query_embedding, limit, repository_filter)
+        .await
+        .context("Vector search failed")?;
+
+    // Display results
+    if results.is_empty() {
+        println!("\nNo results found for query: \"{}\"\n", query);
+        println!("Try:");
+        println!("  - Using different search terms");
+        println!("  - Removing repository filter");
+        println!("  - Checking that documents have been ingested");
+        return Ok(());
+    }
+
+    println!("\nSearch Results for: \"{}\"\n", query);
+    println!("Found {} result(s)\n", results.len());
+    println!("{}", "=".repeat(80));
+
+    for (idx, result) in results.iter().enumerate() {
+        println!("\n{}. {} (Score: {:.4})", idx + 1, result.relative_path, result.score);
+        println!("   Repository: {}", result.repository_url);
+
+        if let Some(distance) = result.distance {
+            println!("   Distance: {:.4}", distance);
+        }
+
+        // Show content preview (first 300 chars)
+        let preview = if result.content.len() > 300 {
+            format!("{}...", &result.content[..300])
+        } else {
+            result.content.clone()
+        };
+
+        println!("   Preview:");
+        for line in preview.lines().take(5) {
+            println!("     {}", line);
+        }
+    }
+
+    println!("\n{}", "=".repeat(80));
+    info!("Search complete");
 
     Ok(())
 }
