@@ -166,7 +166,25 @@ impl GitSummarizeMcp {
 
         // Process files (limit to 100 per request for responsiveness)
         let limit = file_count.min(100);
+
+        // Get max file size from config
+        let config_guard = self.config.lock().await;
+        let max_file_size_bytes = config_guard.pipeline.max_file_size_mb * 1024 * 1024;
+        drop(config_guard);
+
         for file in files.iter().take(limit) {
+            // Enforce file size limit
+            if file.size > max_file_size_bytes as u64 {
+                warn!(
+                    "Skipping {}: file size {} MB exceeds limit of {} MB",
+                    file.relative_path,
+                    file.size / (1024 * 1024),
+                    max_file_size_bytes / (1024 * 1024)
+                );
+                failed += 1;
+                continue;
+            }
+
             let content = match std::fs::read_to_string(&file.path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -181,6 +199,7 @@ impl GitSummarizeMcp {
                 file.relative_path.clone(),
                 content,
                 file.modified,
+                repo_url.clone(),
             );
 
             let inserter = BatchInserter::new(client);
@@ -209,7 +228,7 @@ impl GitSummarizeMcp {
             file_count: processed,
             ingested_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::from_secs(0))
                 .as_secs(),
         };
 
@@ -310,22 +329,40 @@ impl GitSummarizeMcp {
             message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
             data: None,
         })?;
+        drop(repositories); // Release lock early
 
-        // TODO: Remove documents from LanceDB
-        // This would require a query to filter by repository URL or local path
-        // For now, we just remove from metadata tracking
+        // Delete documents from LanceDB
+        info!("MCP: Deleting documents for repository: {}", metadata.url);
 
-        warn!("MCP: Removed repository metadata for: {}", repo_key);
-        warn!("Note: Documents remain in database. Full deletion requires manual database cleanup.");
+        // Ensure DB is connected
+        self.ensure_db_connected().await?;
+
+        let db_guard = self.db_client.lock().await;
+        let client = db_guard.as_ref().ok_or(McpError {
+            code: -32603,
+            message: "Database not connected".to_string(),
+            data: None,
+        })?;
+
+        // Delete all documents belonging to this repository
+        match client.delete_by_repository(&metadata.url).await {
+            Ok(_) => {
+                info!("MCP: Successfully deleted documents for repository: {}", metadata.url);
+            }
+            Err(e) => {
+                warn!("MCP: Failed to delete documents: {}. Metadata removed but documents may remain.", e);
+            }
+        }
+        drop(db_guard);
 
         let result_text = format!(
-            "Repository removed from tracking:\n\
+            "Repository removed successfully:\n\
              \n\
              Name: {}\n\
              URL: {}\n\
              Files tracked: {}\n\
              \n\
-             Note: Documents remain in LanceDB. Use database reset for full cleanup.",
+             All documents and metadata have been removed from the database.",
             repo_key,
             metadata.url,
             metadata.file_count
@@ -431,6 +468,16 @@ impl GitSummarizeMcp {
         self.ensure_db_connected().await?;
 
         // TODO: Implement vector similarity search with embeddings
+        // PRODUCTION ISSUE: Search functionality is non-operational
+        // This is a CRITICAL feature gap. Current status:
+        //   - GroqEmbeddingClient exists but is NOT integrated
+        //   - BatchInserter uses dummy embeddings instead of Groq API
+        //   - LanceDB vector search is not implemented
+        // Required implementation:
+        //   1. Integrate GroqEmbeddingClient into BatchInserter
+        //   2. Implement LanceDB vector similarity query
+        //   3. Add hybrid search (vector + keyword)
+        //   4. Implement result ranking
         // For now, return a placeholder response
 
         let result_text = format!(

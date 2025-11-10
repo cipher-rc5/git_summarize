@@ -69,7 +69,8 @@ impl<'a> SchemaManager<'a> {
             Field::new("title", DataType::Utf8, true),
             Field::new("description", DataType::Utf8, true),
             Field::new("language", DataType::Utf8, true),
-            Field::new("repository_url", DataType::Utf8, true),
+            // Required for repository tracking and deletion
+            Field::new("repository_url", DataType::Utf8, false),
         ]))
     }
 

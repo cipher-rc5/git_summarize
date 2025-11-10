@@ -16,6 +16,7 @@ pub struct Document {
     pub last_modified: u64,
     pub parsed_at: u64,
     pub normalized: bool,
+    pub repository_url: String,
 }
 
 impl Document {
@@ -24,6 +25,7 @@ impl Document {
         relative_path: String,
         content: String,
         last_modified: u64,
+        repository_url: String,
     ) -> Self {
         let content_hash = Self::compute_hash(&content);
         let file_size = content.len() as u64;
@@ -41,6 +43,7 @@ impl Document {
             last_modified,
             parsed_at,
             normalized: false,
+            repository_url,
         }
     }
 
@@ -66,12 +69,14 @@ mod tests {
             "file.md".to_string(),
             "# Test Content".to_string(),
             1234567890,
+            "https://github.com/example/repo".to_string(),
         );
 
         assert_eq!(doc.file_path, "/path/to/file.md");
         assert!(!doc.content_hash.is_empty());
         assert_eq!(doc.file_size, 15);
         assert!(!doc.normalized);
+        assert_eq!(doc.repository_url, "https://github.com/example/repo");
     }
 
     #[test]

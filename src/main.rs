@@ -362,6 +362,7 @@ async fn process_single_file(
         file.relative_path.clone(),
         normalized_content,
         file.modified,
+        config.repository.url.clone(),
     );
 
     inserter.insert_document(&document).await?;
