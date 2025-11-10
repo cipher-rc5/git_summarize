@@ -1,10 +1,10 @@
 [package]
-name = "lazarus_ingest"
+name = "git_summarize"
 version = "0.1.0"
 authors = ["ℭ𝔦𝔭𝔥𝔢𝔯", "https://github.com/cipher-rc5"]
 edition = "2024"
-repository = "https://github.com/cipher_rc5/lazarus_ingest"
-description = "application ingesting DPRK,Lazarus data"
+repository = "https://github.com/cipher_rc5/git_summarize"
+description = "RAG pipeline for any GitHub repository using LanceDB"
 
 [dependencies]
 # error handling
@@ -16,8 +16,11 @@ chrono = "0.4.42"
 # commandline
 clap = { version = "4.5.51", features = ["derive", "env"] }
 
-# database - force ring crypto provider
-clickhouse = { version = "0.14.0", default-features = false, features = ["rustls-tls"] }
+# database - LanceDB for vector storage and RAG
+lancedb = "0.21.0"
+arrow = "54.0.0"
+arrow-array = "54.0.0"
+arrow-schema = "54.0.0"
 colored = "2.1"
 
 # configuration

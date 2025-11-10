@@ -1,8 +1,10 @@
-# Lazarus BlueNoroff Research Ingestion Configuration
+# Git Summarize RAG Pipeline Configuration
 
 [repository]
-# GitHub repository URL
-source_url = "https://github.com/tayvano/lazarus-bluenoroff-research"
+# GitHub repository URL (public or private with credentials)
+# Example: "https://github.com/username/repo"
+# For private repos with token: "https://TOKEN@github.com/username/repo"
+source_url = "https://github.com/user/example-repo"
 
 # Local path where repository will be cloned
 local_path = "./data_repo"
@@ -14,24 +16,25 @@ branch = "main"
 sync_on_start = true
 
 [database]
-# ClickHouse server
-host = "localhost"
-port = 8123
-database = "lazarus_research"
+# LanceDB storage URI
+# Can be a local path or remote URI
+uri = "data/lancedb"
+
+# Table name for document storage
+table_name = "documents"
 
 # Batch size for bulk insertions
-batch_size = 1000
+batch_size = 100
 
-# Optional authentication (uncomment if needed)
-# username = "default"
-# password = ""
+# Embedding dimension for RAG vectors
+# Common values: 384 (all-MiniLM-L6-v2), 768 (BERT), 1536 (OpenAI)
+embedding_dim = 384
 
 [pipeline]
 # Number of parallel workers for processing files
 parallel_workers = 4
 
 # Patterns to skip during scanning
-# IMPORTANT: Exclude malicious-shit directory to avoid ingesting malware
 skip_patterns = [
   "*.zip",
   "*.pdf",
@@ -39,9 +42,10 @@ skip_patterns = [
   "*.dll",
   "*.bin",
   ".git/*",
-  "malicious-shit/*",
-  "**/malicious-shit/*",
-  "malicious-shit/**",
+  "node_modules/*",
+  "target/*",
+  "dist/*",
+  "build/*",
 ]
 
 # Force reprocess all files (ignores cache)

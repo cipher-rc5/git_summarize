@@ -2,7 +2,6 @@
 // description: incident model representing cyber attacks and thefts
 // reference: threat intelligence incident tracking
 
-use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,7 +24,7 @@ impl DatePrecision {
     }
 }
 
-#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Incident {
     pub document_id: String,
     pub title: String,

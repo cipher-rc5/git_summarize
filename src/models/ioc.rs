@@ -2,7 +2,6 @@
 // description: indicators of compromise model for threat intelligence
 // reference: stix ioc standards
 
-use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,7 +26,7 @@ impl IocType {
     }
 }
 
-#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ioc {
     pub ioc_type: String,
     pub value: String,

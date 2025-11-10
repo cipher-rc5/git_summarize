@@ -1,15 +1,21 @@
 // file: src/database/insert.rs
-// description: batch insertion operations with error handling
-// reference: clickhouse insert patterns
+// description: LanceDB batch insertion operations with vector embeddings
+// reference: https://docs.rs/lancedb
 
-use crate::database::client::ClickHouseClient;
-use crate::error::Result;
-use crate::models::{CryptoAddress, Document, Incident, Ioc};
+use crate::database::client::LanceDbClient;
+use crate::database::schema::SchemaManager;
+use crate::error::{PipelineError, Result};
+use crate::models::Document;
+use arrow_array::{
+    BooleanArray, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, UInt64Array,
+};
+use arrow_array::types::Float32Type;
+use arrow_array::Float32Array;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 pub struct BatchInserter<'a> {
-    client: &'a ClickHouseClient,
+    client: &'a LanceDbClient,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -22,106 +28,153 @@ pub struct InsertStats {
 }
 
 impl<'a> BatchInserter<'a> {
-    pub fn new(client: &'a ClickHouseClient) -> Self {
+    pub fn new(client: &'a LanceDbClient) -> Self {
         Self { client }
     }
 
+    /// Insert a single document with its embedding into LanceDB
     pub async fn insert_document(&self, document: &Document) -> Result<String> {
-        let mut inserter = self
-            .client
-            .get_client()
-            .insert::<Document>("documents")
-            .await?;
-        inserter.write(document).await?;
-        inserter.end().await?;
+        let embedding_dim = self.client.embedding_dim();
+        let schema = SchemaManager::get_documents_schema(embedding_dim);
 
-        let document_id = Uuid::new_v4().to_string();
+        // Generate a dummy embedding for now (in production, use a real embedding model)
+        let embedding = Self::generate_embedding(&document.content, embedding_dim);
+
+        let record_batch = Self::create_record_batch(
+            schema.clone(),
+            vec![document.clone()],
+            vec![embedding],
+        )?;
+
+        let table_name = self.client.table_name();
+
+        // Check if table exists
+        if !self.client.table_exists(table_name).await? {
+            // Create table with first batch
+            self.client
+                .get_connection()
+                .create_table(
+                    table_name,
+                    RecordBatchIterator::new(vec![Ok(record_batch)], schema.clone()),
+                )
+                .execute()
+                .await
+                .map_err(|e| {
+                    PipelineError::Database(format!("Failed to create table: {}", e))
+                })?;
+            info!("Created new table: {}", table_name);
+        } else {
+            // Append to existing table
+            let table = self.client.get_table(table_name).await?;
+            table
+                .add(RecordBatchIterator::new(vec![Ok(record_batch)], schema))
+                .execute()
+                .await
+                .map_err(|e| {
+                    PipelineError::Database(format!("Failed to insert document: {}", e))
+                })?;
+        }
+
         debug!("Inserted document: {}", document.file_path);
-
-        Ok(document_id)
+        Ok(document.content_hash.clone())
     }
 
-    pub async fn insert_documents_batch(&self, documents: &[Document]) -> Result<usize> {
-        if documents.is_empty() {
-            return Ok(0);
-        }
+    /// Create an Arrow RecordBatch from documents and embeddings
+    fn create_record_batch(
+        schema: Arc<arrow_schema::Schema>,
+        documents: Vec<Document>,
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<RecordBatch> {
+        let len = documents.len();
 
-        let mut inserter = self
-            .client
-            .get_client()
-            .insert::<Document>("documents")
-            .await?;
+        // Build arrays for each field
+        let ids: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.content_hash.clone()))
+            .collect();
 
-        for doc in documents {
-            inserter.write(doc).await?;
-        }
+        let file_paths: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.file_path.clone()))
+            .collect();
 
-        inserter.end().await?;
+        let relative_paths: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.relative_path.clone()))
+            .collect();
 
-        info!("Inserted {} documents", documents.len());
-        Ok(documents.len())
+        let contents: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.content.clone()))
+            .collect();
+
+        let content_hashes: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.content_hash.clone()))
+            .collect();
+
+        let file_sizes: UInt64Array = documents.iter().map(|doc| Some(doc.file_size)).collect();
+
+        let last_modifieds: UInt64Array = documents
+            .iter()
+            .map(|doc| Some(doc.last_modified))
+            .collect();
+
+        let parsed_ats: UInt64Array = documents.iter().map(|doc| Some(doc.parsed_at)).collect();
+
+        let normalized: BooleanArray = documents.iter().map(|doc| Some(doc.normalized)).collect();
+
+        // Build embedding array (FixedSizeList of Float32)
+        let embedding_values: Float32Array = embeddings
+            .iter()
+            .flat_map(|emb| emb.iter().copied())
+            .collect();
+
+        let embedding_list = FixedSizeListArray::try_new_from_values(
+            embedding_values,
+            embeddings[0].len() as i32,
+        )
+        .map_err(|e| PipelineError::Database(format!("Failed to create embedding array: {}", e)))?;
+
+        // Optional metadata fields (null for now)
+        let titles: StringArray = (0..len).map(|_| None::<String>).collect();
+        let descriptions: StringArray = (0..len).map(|_| None::<String>).collect();
+        let languages: StringArray = (0..len).map(|_| None::<String>).collect();
+        let repository_urls: StringArray = (0..len).map(|_| None::<String>).collect();
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(ids),
+                Arc::new(file_paths),
+                Arc::new(relative_paths),
+                Arc::new(contents),
+                Arc::new(content_hashes),
+                Arc::new(file_sizes),
+                Arc::new(last_modifieds),
+                Arc::new(parsed_ats),
+                Arc::new(normalized),
+                Arc::new(embedding_list),
+                Arc::new(titles),
+                Arc::new(descriptions),
+                Arc::new(languages),
+                Arc::new(repository_urls),
+            ],
+        )
+        .map_err(|e| PipelineError::Database(format!("Failed to create record batch: {}", e)))
     }
 
-    pub async fn insert_incidents_batch(&self, incidents: &[Incident]) -> Result<usize> {
-        if incidents.is_empty() {
-            return Ok(0);
-        }
-
-        let mut inserter = self
-            .client
-            .get_client()
-            .insert::<Incident>("incidents")
-            .await?;
-
-        for incident in incidents {
-            inserter.write(incident).await?;
-        }
-
-        inserter.end().await?;
-
-        info!("Inserted {} incidents", incidents.len());
-        Ok(incidents.len())
-    }
-
-    pub async fn insert_crypto_addresses_batch(
-        &self,
-        addresses: &[CryptoAddress],
-    ) -> Result<usize> {
-        if addresses.is_empty() {
-            return Ok(0);
-        }
-
-        let mut inserter = self
-            .client
-            .get_client()
-            .insert::<CryptoAddress>("crypto_addresses")
-            .await?;
-
-        for address in addresses {
-            inserter.write(address).await?;
-        }
-
-        inserter.end().await?;
-
-        info!("Inserted {} crypto addresses", addresses.len());
-        Ok(addresses.len())
-    }
-
-    pub async fn insert_iocs_batch(&self, iocs: &[Ioc]) -> Result<usize> {
-        if iocs.is_empty() {
-            return Ok(0);
-        }
-
-        let mut inserter = self.client.get_client().insert::<Ioc>("iocs").await?;
-
-        for ioc in iocs {
-            inserter.write(ioc).await?;
-        }
-
-        inserter.end().await?;
-
-        info!("Inserted {} IOCs", iocs.len());
-        Ok(iocs.len())
+    /// Generate a simple embedding (placeholder - in production use a real embedding model)
+    fn generate_embedding(text: &str, dim: usize) -> Vec<f32> {
+        // This is a placeholder. In production, you would use:
+        // - sentence-transformers
+        // - OpenAI embeddings API
+        // - Local models like all-MiniLM-L6-v2
+        // For now, generate a simple deterministic embedding based on text hash
+        let hash = text.bytes().fold(0u64, |acc, b| acc.wrapping_add(b as u64));
+        (0..dim)
+            .map(|i| ((hash.wrapping_add(i as u64) % 1000) as f32 / 1000.0))
+            .collect()
     }
 
     pub async fn log_processing(
@@ -131,79 +184,37 @@ impl<'a> BatchInserter<'a> {
         error_message: &str,
         processing_time_ms: u32,
     ) -> Result<()> {
-        let query = format!(
-            "INSERT INTO processing_log (file_path, status, error_message, processed_at, processing_time_ms) VALUES ('{}', '{}', '{}', {}, {})",
-            file_path.replace('\'', "''"),
-            status,
-            error_message.replace('\'', "''"),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            processing_time_ms
-        );
-
-        self.client.get_client().query(&query).execute().await?;
-
+        // For LanceDB, we could log to a separate table or just use tracing
+        if status == "failed" {
+            warn!(
+                "Processing failed for {}: {} (took {}ms)",
+                file_path, error_message, processing_time_ms
+            );
+        } else {
+            debug!(
+                "Processing succeeded for {} (took {}ms)",
+                file_path, processing_time_ms
+            );
+        }
         Ok(())
     }
 
     pub async fn insert_complete_batch(
         &self,
         document: Document,
-        incidents: Vec<Incident>,
-        addresses: Vec<CryptoAddress>,
-        iocs: Vec<Ioc>,
+        _incidents: Vec<crate::models::Incident>,
+        _addresses: Vec<crate::models::CryptoAddress>,
+        _iocs: Vec<crate::models::Ioc>,
     ) -> Result<InsertStats> {
         let mut stats = InsertStats::default();
 
-        let document_id = self.insert_document(&document).await?;
+        // For LanceDB RAG pipeline, we focus on documents with embeddings
+        // Additional entities can be stored as metadata or in separate tables
+        self.insert_document(&document).await?;
         stats.documents_inserted = 1;
 
-        let incidents_with_id: Vec<Incident> = incidents
-            .into_iter()
-            .map(|i| i.with_document_id(document_id.clone()))
-            .collect();
-
-        if !incidents_with_id.is_empty() {
-            match self.insert_incidents_batch(&incidents_with_id).await {
-                Ok(count) => stats.incidents_inserted = count,
-                Err(e) => {
-                    warn!("Failed to insert incidents: {}", e);
-                    stats.errors += 1;
-                }
-            }
-        }
-
-        let addresses_with_id: Vec<CryptoAddress> = addresses
-            .into_iter()
-            .map(|a| a.with_document_id(document_id.clone()))
-            .collect();
-
-        if !addresses_with_id.is_empty() {
-            match self.insert_crypto_addresses_batch(&addresses_with_id).await {
-                Ok(count) => stats.addresses_inserted = count,
-                Err(e) => {
-                    warn!("Failed to insert crypto addresses: {}", e);
-                    stats.errors += 1;
-                }
-            }
-        }
-
-        let iocs_with_id: Vec<Ioc> = iocs
-            .into_iter()
-            .map(|i| i.with_document_id(document_id.clone()))
-            .collect();
-
-        if !iocs_with_id.is_empty() {
-            match self.insert_iocs_batch(&iocs_with_id).await {
-                Ok(count) => stats.iocs_inserted = count,
-                Err(e) => {
-                    warn!("Failed to insert IOCs: {}", e);
-                    stats.errors += 1;
-                }
-            }
-        }
+        // Note: incidents, addresses, and IOCs are ignored in this simplified version
+        // They could be stored as JSON metadata or in separate tables if needed
 
         Ok(stats)
     }
@@ -221,5 +232,12 @@ mod tests {
         assert_eq!(stats.addresses_inserted, 0);
         assert_eq!(stats.iocs_inserted, 0);
         assert_eq!(stats.errors, 0);
+    }
+
+    #[test]
+    fn test_embedding_generation() {
+        let embedding = BatchInserter::generate_embedding("test content", 384);
+        assert_eq!(embedding.len(), 384);
+        assert!(embedding.iter().all(|&x| x >= 0.0 && x <= 1.0));
     }
 }

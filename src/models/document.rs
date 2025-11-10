@@ -2,12 +2,11 @@
 // description: core document model with validation and serialization
 // reference: internal data structures
 
-use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub file_path: String,
     pub relative_path: String,

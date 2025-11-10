@@ -25,7 +25,7 @@ pub enum PipelineError {
     MarkdownParse { file: String, message: String },
 
     #[error("Database error: {0}")]
-    Database(#[from] clickhouse::error::Error),
+    Database(String),
 
     #[error("Extraction error: {0}")]
     Extraction(String),

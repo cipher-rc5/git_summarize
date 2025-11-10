@@ -15,7 +15,7 @@ pub mod repository;
 pub mod utils;
 
 pub use config::{Config, DatabaseConfig, ExtractionConfig, PipelineConfig, RepositoryConfig};
-pub use database::{BatchInserter, ClickHouseClient, InsertStats, SchemaManager};
+pub use database::{BatchInserter, LanceDbClient, InsertStats, SchemaManager};
 pub use error::{PipelineError, Result};
 pub use exporter::json::{ExportManifest, ExportedDocument, JsonExporter};
 pub use extractor::{CryptoExtractor, IncidentExtractor, IocExtractor};
