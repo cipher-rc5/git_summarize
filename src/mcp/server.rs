@@ -11,7 +11,9 @@ use rmcp::{tool, tool_router, ErrorData as McpError};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::Duration;
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 /// Metadata about an ingested repository
@@ -26,23 +28,89 @@ struct RepositoryMetadata {
     ingested_at: u64,
 }
 
+/// GitSummarizeMcp server with concurrent access controls
+///
+/// Lock Ordering (to prevent deadlocks, always acquire in this order):
+/// 1. config (RwLock) - read-heavy, rarely modified
+/// 2. repositories (RwLock) - read-heavy during list/get operations
+/// 3. db_client (Mutex) - moderate read/write for database operations
+///
+/// All locks have 30-second timeouts to prevent indefinite hangs.
 #[derive(Clone)]
 pub struct GitSummarizeMcp {
-    config: Arc<Mutex<Config>>,
+    config: Arc<RwLock<Config>>,
     db_client: Arc<Mutex<Option<LanceDbClient>>>,
-    repositories: Arc<Mutex<HashMap<String, RepositoryMetadata>>>,
+    repositories: Arc<RwLock<HashMap<String, RepositoryMetadata>>>,
     tool_router: ToolRouter<Self>,
 }
+
+/// Lock acquisition timeout (30 seconds)
+const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tool_router]
 impl GitSummarizeMcp {
     pub fn new(config: Config) -> Self {
         Self {
-            config: Arc::new(Mutex::new(config)),
+            config: Arc::new(RwLock::new(config)),
             db_client: Arc::new(Mutex::new(None)),
-            repositories: Arc::new(Mutex::new(HashMap::new())),
+            repositories: Arc::new(RwLock::new(HashMap::new())),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Acquire config read lock with timeout
+    async fn read_config(&self) -> Result<tokio::sync::RwLockReadGuard<'_, Config>, McpError> {
+        timeout(LOCK_TIMEOUT, self.config.read())
+            .await
+            .map_err(|_| McpError {
+                code: -32603,
+                message: "Timeout acquiring config read lock".to_string(),
+                data: None,
+            })
+    }
+
+    /// Acquire config write lock with timeout
+    async fn write_config(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, Config>, McpError> {
+        timeout(LOCK_TIMEOUT, self.config.write())
+            .await
+            .map_err(|_| McpError {
+                code: -32603,
+                message: "Timeout acquiring config write lock".to_string(),
+                data: None,
+            })
+    }
+
+    /// Acquire repositories read lock with timeout
+    async fn read_repositories(&self) -> Result<tokio::sync::RwLockReadGuard<'_, HashMap<String, RepositoryMetadata>>, McpError> {
+        timeout(LOCK_TIMEOUT, self.repositories.read())
+            .await
+            .map_err(|_| McpError {
+                code: -32603,
+                message: "Timeout acquiring repositories read lock".to_string(),
+                data: None,
+            })
+    }
+
+    /// Acquire repositories write lock with timeout
+    async fn write_repositories(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, HashMap<String, RepositoryMetadata>>, McpError> {
+        timeout(LOCK_TIMEOUT, self.repositories.write())
+            .await
+            .map_err(|_| McpError {
+                code: -32603,
+                message: "Timeout acquiring repositories write lock".to_string(),
+                data: None,
+            })
+    }
+
+    /// Acquire db_client lock with timeout
+    async fn lock_db_client(&self) -> Result<tokio::sync::MutexGuard<'_, Option<LanceDbClient>>, McpError> {
+        timeout(LOCK_TIMEOUT, self.db_client.lock())
+            .await
+            .map_err(|_| McpError {
+                code: -32603,
+                message: "Timeout acquiring database client lock".to_string(),
+                data: None,
+            })
     }
 
     pub fn get_tool_router(&self) -> &ToolRouter<Self> {
@@ -51,9 +119,9 @@ impl GitSummarizeMcp {
 
     /// Initialize database connection
     async fn ensure_db_connected(&self) -> Result<(), McpError> {
-        let mut db_client = self.db_client.lock().await;
+        let mut db_client = self.lock_db_client().await?;
         if db_client.is_none() {
-            let config = self.config.lock().await;
+            let config = self.read_config().await?;
             let client = LanceDbClient::new(config.database.clone())
                 .await
                 .map_err(|e| McpError {
@@ -98,7 +166,7 @@ impl GitSummarizeMcp {
 
         // Update config with new repository URL
         let local_path = {
-            let mut config = self.config.lock().await;
+            let mut config = self.write_config().await?;
             config.repository.source_url = repo_url.clone();
             if let Some(ref_name) = reference.clone() {
                 config.repository.branch = ref_name;
@@ -107,7 +175,7 @@ impl GitSummarizeMcp {
         };
 
         // Sync repository
-        let config = self.config.lock().await.clone();
+        let config = self.read_config().await?.clone();
         let sync = RepositorySync::new(config.repository.clone());
         sync.sync().map_err(|e| McpError {
             code: -32603,
@@ -146,7 +214,7 @@ impl GitSummarizeMcp {
         info!("MCP: Found {} files to process", file_count);
 
         // Get DB client for processing
-        let db_guard = self.db_client.lock().await;
+        let db_guard = self.lock_db_client().await?;
         let client = db_guard.as_ref().ok_or(McpError {
             code: -32603,
             message: "Database not connected".to_string(),
@@ -168,7 +236,7 @@ impl GitSummarizeMcp {
         let limit = file_count.min(100);
 
         // Get max file size from config
-        let config_guard = self.config.lock().await;
+        let config_guard = self.read_config().await?;
         let max_file_size_bytes = config_guard.pipeline.max_file_size_mb * 1024 * 1024;
         drop(config_guard);
 
@@ -232,7 +300,7 @@ impl GitSummarizeMcp {
                 .as_secs(),
         };
 
-        self.repositories.lock().await.insert(repo_key, metadata);
+        self.write_repositories().await?.insert(repo_key, metadata);
 
         let result_text = format!(
             "Repository ingestion complete:\n\
@@ -268,7 +336,7 @@ impl GitSummarizeMcp {
     async fn list_repositories(&self) -> Result<CallToolResult, McpError> {
         info!("MCP: Listing repositories");
 
-        let repositories = self.repositories.lock().await;
+        let repositories = self.read_repositories().await?;
 
         if repositories.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -323,7 +391,7 @@ impl GitSummarizeMcp {
         };
 
         // Check if repository exists
-        let mut repositories = self.repositories.lock().await;
+        let mut repositories = self.write_repositories().await?;
         let metadata = repositories.remove(&repo_key).ok_or_else(|| McpError {
             code: -32602,
             message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
@@ -337,7 +405,7 @@ impl GitSummarizeMcp {
         // Ensure DB is connected
         self.ensure_db_connected().await?;
 
-        let db_guard = self.db_client.lock().await;
+        let db_guard = self.lock_db_client().await?;
         let client = db_guard.as_ref().ok_or(McpError {
             code: -32603,
             message: "Database not connected".to_string(),
@@ -387,7 +455,7 @@ impl GitSummarizeMcp {
         };
 
         // Get existing metadata
-        let repositories = self.repositories.lock().await;
+        let repositories = self.read_repositories().await?;
         let old_metadata = repositories.get(&repo_key).ok_or_else(|| McpError {
             code: -32602,
             message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
@@ -415,7 +483,7 @@ impl GitSummarizeMcp {
 
         self.ensure_db_connected().await?;
 
-        let db_guard = self.db_client.lock().await;
+        let db_guard = self.lock_db_client().await?;
         let client = db_guard.as_ref().ok_or(McpError {
             code: -32603,
             message: "Database not connected".to_string(),
@@ -428,7 +496,7 @@ impl GitSummarizeMcp {
             data: None,
         })?;
 
-        let repos = self.repositories.lock().await;
+        let repos = self.read_repositories().await?;
         let repo_count = repos.len();
 
         let stats_text = format!(
@@ -471,7 +539,7 @@ impl GitSummarizeMcp {
         let search_limit = limit.unwrap_or(5);
 
         // Get database client
-        let db_guard = self.db_client.lock().await;
+        let db_guard = self.lock_db_client().await?;
         let client = db_guard.as_ref().ok_or(McpError {
             code: -32603,
             message: "Database not connected".to_string(),
@@ -567,7 +635,7 @@ impl GitSummarizeMcp {
     async fn get_config(&self) -> Result<CallToolResult, McpError> {
         info!("MCP: Getting configuration");
 
-        let config = self.config.lock().await;
+        let config = self.read_config().await?;
 
         let config_text = format!(
             "Git Summarize Configuration:\n\
@@ -610,7 +678,7 @@ impl GitSummarizeMcp {
 
         self.ensure_db_connected().await?;
 
-        let db_guard = self.db_client.lock().await;
+        let db_guard = self.lock_db_client().await?;
         let client = db_guard.as_ref().ok_or(McpError {
             code: -32603,
             message: "Database not connected".to_string(),
