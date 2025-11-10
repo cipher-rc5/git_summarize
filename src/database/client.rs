@@ -95,6 +95,36 @@ impl LanceDbClient {
     pub fn groq_model(&self) -> &str {
         &self.config.groq_model
     }
+
+    /// Delete all documents belonging to a specific repository
+    pub async fn delete_by_repository(&self, repository_url: &str) -> Result<u64> {
+        if !self.table_exists(&self.config.table_name).await? {
+            info!("Table does not exist, nothing to delete");
+            return Ok(0);
+        }
+
+        let table = self.get_table(&self.config.table_name).await?;
+
+        // Use LanceDB's delete predicate syntax
+        // The predicate filters which rows to delete
+        let predicate = format!("repository_url = '{}'", repository_url);
+
+        info!("Deleting documents with predicate: {}", predicate);
+
+        table
+            .delete(&predicate)
+            .await
+            .map_err(|e| {
+                PipelineError::Database(format!(
+                    "Failed to delete documents for repository {}: {}",
+                    repository_url, e
+                ))
+            })?;
+
+        // LanceDB delete doesn't return count directly, so we'll return success
+        info!("Successfully deleted documents for repository: {}", repository_url);
+        Ok(0) // LanceDB doesn't return deletion count in this API
+    }
 }
 
 #[cfg(test)]

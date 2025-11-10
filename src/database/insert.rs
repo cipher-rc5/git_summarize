@@ -154,11 +154,16 @@ impl<'a> BatchInserter<'a> {
         )
         .map_err(|e| PipelineError::Database(format!("Failed to create embedding array: {}", e)))?;
 
-        // Optional metadata fields (null for now)
+        // Optional metadata fields
         let titles: StringArray = (0..len).map(|_| None::<String>).collect();
         let descriptions: StringArray = (0..len).map(|_| None::<String>).collect();
         let languages: StringArray = (0..len).map(|_| None::<String>).collect();
-        let repository_urls: StringArray = (0..len).map(|_| None::<String>).collect();
+
+        // Repository URL is required for deletion tracking
+        let repository_urls: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.repository_url.clone()))
+            .collect();
 
         RecordBatch::try_new(
             schema,

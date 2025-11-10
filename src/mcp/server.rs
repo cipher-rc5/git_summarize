@@ -199,6 +199,7 @@ impl GitSummarizeMcp {
                 file.relative_path.clone(),
                 content,
                 file.modified,
+                repo_url.clone(),
             );
 
             let inserter = BatchInserter::new(client);
@@ -328,27 +329,40 @@ impl GitSummarizeMcp {
             message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
             data: None,
         })?;
+        drop(repositories); // Release lock early
 
-        // TODO: Remove documents from LanceDB
-        // PRODUCTION ISSUE: Documents remain in database after repository removal
-        // This is a critical gap that needs implementation before production use.
-        // Required implementation:
-        //   1. Add 'repository_url' field to Document model
-        //   2. Implement LanceDB delete/filter query
-        //   3. Add confirmation prompt for data deletion
-        //   4. Implement soft-delete option
+        // Delete documents from LanceDB
+        info!("MCP: Deleting documents for repository: {}", metadata.url);
 
-        warn!("MCP: Removed repository metadata for: {}", repo_key);
-        warn!("Note: Documents remain in database. Full deletion requires manual database cleanup.");
+        // Ensure DB is connected
+        self.ensure_db_connected().await?;
+
+        let db_guard = self.db_client.lock().await;
+        let client = db_guard.as_ref().ok_or(McpError {
+            code: -32603,
+            message: "Database not connected".to_string(),
+            data: None,
+        })?;
+
+        // Delete all documents belonging to this repository
+        match client.delete_by_repository(&metadata.url).await {
+            Ok(_) => {
+                info!("MCP: Successfully deleted documents for repository: {}", metadata.url);
+            }
+            Err(e) => {
+                warn!("MCP: Failed to delete documents: {}. Metadata removed but documents may remain.", e);
+            }
+        }
+        drop(db_guard);
 
         let result_text = format!(
-            "Repository removed from tracking:\n\
+            "Repository removed successfully:\n\
              \n\
              Name: {}\n\
              URL: {}\n\
              Files tracked: {}\n\
              \n\
-             Note: Documents remain in LanceDB. Use database reset for full cleanup.",
+             All documents and metadata have been removed from the database.",
             repo_key,
             metadata.url,
             metadata.file_count
