@@ -31,7 +31,11 @@ impl Document {
         let file_size = content.len() as u64;
         let parsed_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| {
+                // System time is before UNIX_EPOCH (extremely unlikely)
+                // Fall back to 0 to prevent panic
+                std::time::Duration::from_secs(0)
+            })
             .as_secs();
 
         Self {
