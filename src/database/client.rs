@@ -88,8 +88,12 @@ impl LanceDbClient {
         &self.config.table_name
     }
 
-    pub fn embedding_dim(&self) -> usize {
-        self.config.embedding_dim
+    pub fn groq_api_key(&self) -> Option<&String> {
+        self.config.groq_api_key.as_ref()
+    }
+
+    pub fn groq_model(&self) -> &str {
+        &self.config.groq_model
     }
 }
 
@@ -103,7 +107,8 @@ mod tests {
             uri: "memory://test".to_string(),
             table_name: "test_table".to_string(),
             batch_size: 100,
-            embedding_dim: 384,
+            groq_api_key: None,
+            groq_model: "openai/gpt-oss-120b".to_string(),
         };
 
         assert_eq!(config.uri, "memory://test");

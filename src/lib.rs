@@ -18,10 +18,7 @@ pub use config::{Config, DatabaseConfig, ExtractionConfig, PipelineConfig, Repos
 pub use database::{BatchInserter, LanceDbClient, InsertStats, SchemaManager};
 pub use error::{PipelineError, Result};
 pub use exporter::json::{ExportManifest, ExportedDocument, JsonExporter};
-pub use extractor::{CryptoExtractor, IncidentExtractor, IocExtractor};
-pub use models::{
-    ChainType, CryptoAddress, DatePrecision, Document, Incident, IncidentBuilder, Ioc, IocType,
-};
+pub use models::Document;
 pub use parser::{
     Frontmatter, FrontmatterParser, MarkdownNormalizer, MarkdownParser, ParsedMarkdown,
 };

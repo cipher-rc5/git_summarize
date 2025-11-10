@@ -21,9 +21,6 @@ pub struct BatchInserter<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct InsertStats {
     pub documents_inserted: usize,
-    pub incidents_inserted: usize,
-    pub addresses_inserted: usize,
-    pub iocs_inserted: usize,
     pub errors: usize,
 }
 
@@ -34,11 +31,12 @@ impl<'a> BatchInserter<'a> {
 
     /// Insert a single document with its embedding into LanceDB
     pub async fn insert_document(&self, document: &Document) -> Result<String> {
-        let embedding_dim = self.client.embedding_dim();
-        let schema = SchemaManager::get_documents_schema(embedding_dim);
+        // Fixed embedding dimension (can be made configurable later)
+        const EMBEDDING_DIM: usize = 768;
+        let schema = SchemaManager::get_documents_schema(EMBEDDING_DIM);
 
-        // Generate a dummy embedding for now (in production, use a real embedding model)
-        let embedding = Self::generate_embedding(&document.content, embedding_dim);
+        // Generate a dummy embedding for now (can be replaced with Groq API or other model)
+        let embedding = Self::generate_embedding(&document.content, EMBEDDING_DIM);
 
         let record_batch = Self::create_record_batch(
             schema.clone(),
@@ -199,25 +197,6 @@ impl<'a> BatchInserter<'a> {
         Ok(())
     }
 
-    pub async fn insert_complete_batch(
-        &self,
-        document: Document,
-        _incidents: Vec<crate::models::Incident>,
-        _addresses: Vec<crate::models::CryptoAddress>,
-        _iocs: Vec<crate::models::Ioc>,
-    ) -> Result<InsertStats> {
-        let mut stats = InsertStats::default();
-
-        // For LanceDB RAG pipeline, we focus on documents with embeddings
-        // Additional entities can be stored as metadata or in separate tables
-        self.insert_document(&document).await?;
-        stats.documents_inserted = 1;
-
-        // Note: incidents, addresses, and IOCs are ignored in this simplified version
-        // They could be stored as JSON metadata or in separate tables if needed
-
-        Ok(stats)
-    }
 }
 
 #[cfg(test)]
@@ -228,9 +207,6 @@ mod tests {
     fn test_insert_stats_default() {
         let stats = InsertStats::default();
         assert_eq!(stats.documents_inserted, 0);
-        assert_eq!(stats.incidents_inserted, 0);
-        assert_eq!(stats.addresses_inserted, 0);
-        assert_eq!(stats.iocs_inserted, 0);
         assert_eq!(stats.errors, 0);
     }
 

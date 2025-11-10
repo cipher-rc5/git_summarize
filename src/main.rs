@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    BatchInserter, LanceDbClient, Config, CryptoExtractor, FileClassifier, FileScanner,
-    IncidentExtractor, IocExtractor, JsonExporter, MarkdownNormalizer, MarkdownParser,
+    BatchInserter, LanceDbClient, Config, FileClassifier, FileScanner,
+    JsonExporter, MarkdownNormalizer, MarkdownParser,
     RepositorySync, SchemaManager, Validator,
 };
 use std::path::PathBuf;
@@ -347,9 +347,7 @@ async fn process_single_file(
         content.clone()
     };
 
-    let parsed = markdown_parser.parse(&normalized_content)?;
-
-    let attribution = classifier.extract_attribution(&file.path);
+    let _parsed = markdown_parser.parse(&normalized_content)?;
 
     let document = git_summarize::Document::new(
         file.path.display().to_string(),
@@ -358,39 +356,13 @@ async fn process_single_file(
         file.modified,
     );
 
-    let mut incidents = Vec::new();
-    if config.extraction.extract_incidents {
-        let incident_extractor = IncidentExtractor::new();
-        incidents =
-            incident_extractor.extract_from_markdown(&content, &file.path.display().to_string());
-    }
-
-    let mut addresses = Vec::new();
-    if config.extraction.extract_crypto_addresses {
-        let mut crypto_extractor = CryptoExtractor::new();
-        addresses = crypto_extractor.extract_from_text(
-            &parsed.plain_text,
-            &file.path.display().to_string(),
-            &attribution,
-        );
-    }
-
-    let mut iocs = Vec::new();
-    if config.extraction.extract_iocs {
-        let mut ioc_extractor = IocExtractor::new();
-        iocs = ioc_extractor.extract_from_text(&parsed.plain_text);
-    }
-
     let stats = inserter
-        .insert_complete_batch(document, incidents, addresses, iocs)
+        .insert_document(&document)
         .await?;
 
     info!(
-        "Inserted: {} doc, {} incidents, {} addresses, {} IOCs",
-        stats.documents_inserted,
-        stats.incidents_inserted,
-        stats.addresses_inserted,
-        stats.iocs_inserted
+        "Inserted document: {}",
+        file.relative_path
     );
 
     Ok(())
@@ -446,21 +418,6 @@ async fn cmd_stats(config: &Config) -> Result<()> {
 
     let doc_count = client.get_document_count().await?;
     info!("Total documents: {}", doc_count);
-
-    let tables = vec!["incidents", "crypto_addresses", "iocs", "processing_log"];
-
-    for table in tables {
-        if client.table_exists(table).await? {
-            let query = format!("SELECT count() FROM {}", table);
-            let count: u64 = client
-                .get_client()
-                .query(&query)
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            info!("Total {}: {}", table, count);
-        }
-    }
 
     Ok(())
 }
