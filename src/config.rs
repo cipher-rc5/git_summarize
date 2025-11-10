@@ -28,7 +28,8 @@ pub struct DatabaseConfig {
     pub uri: String,
     pub table_name: String,
     pub batch_size: usize,
-    pub embedding_dim: usize,
+    pub groq_api_key: Option<String>,
+    pub groq_model: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -41,9 +42,6 @@ pub struct PipelineConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExtractionConfig {
-    pub extract_crypto_addresses: bool,
-    pub extract_incidents: bool,
-    pub extract_iocs: bool,
     pub normalize_markdown: bool,
 }
 
@@ -89,7 +87,8 @@ impl Config {
                 uri: "data/lancedb".to_string(),
                 table_name: "documents".to_string(),
                 batch_size: 100,
-                embedding_dim: 384,
+                groq_api_key: None,
+                groq_model: "openai/gpt-oss-120b".to_string(),
             },
             pipeline: PipelineConfig {
                 parallel_workers: 4,
@@ -102,9 +101,6 @@ impl Config {
                 max_file_size_mb: 10,
             },
             extraction: ExtractionConfig {
-                extract_crypto_addresses: true,
-                extract_incidents: true,
-                extract_iocs: true,
                 normalize_markdown: true,
             },
         }

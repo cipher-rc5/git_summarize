@@ -6,9 +6,8 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    BatchInserter, LanceDbClient, Config, CryptoExtractor, FileClassifier, FileScanner,
-    IncidentExtractor, IocExtractor, JsonExporter, MarkdownNormalizer, MarkdownParser,
-    RepositorySync, SchemaManager, Validator,
+    mcp::GitSummarizeMcp, BatchInserter, Config, FileClassifier, FileScanner, JsonExporter,
+    LanceDbClient, MarkdownNormalizer, MarkdownParser, RepositorySync, SchemaManager, Validator,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,6 +81,12 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
     },
+
+    /// Start MCP (Model Context Protocol) server for agentic tool integration
+    Mcp {
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+    },
 }
 
 #[tokio::main]
@@ -133,6 +138,9 @@ async fn main() -> Result<()> {
             query,
         } => {
             cmd_export(&config, output, pretty, document_hash, query).await?;
+        }
+        Commands::Mcp { transport } => {
+            cmd_mcp(&config, &transport).await?;
         }
     }
 
@@ -329,7 +337,7 @@ async fn process_files(
 
 async fn process_single_file(
     inserter: &BatchInserter<'_>,
-    classifier: &FileClassifier,
+    _classifier: &FileClassifier,
     markdown_parser: &MarkdownParser,
     normalizer: &MarkdownNormalizer,
     config: &Config,
@@ -344,54 +352,21 @@ async fn process_single_file(
     let normalized_content = if config.extraction.normalize_markdown {
         normalizer.normalize(&content)?
     } else {
-        content.clone()
+        content
     };
 
-    let parsed = markdown_parser.parse(&normalized_content)?;
-
-    let attribution = classifier.extract_attribution(&file.path);
+    let _parsed = markdown_parser.parse(&normalized_content)?;
 
     let document = git_summarize::Document::new(
         file.path.display().to_string(),
         file.relative_path.clone(),
-        normalized_content.clone(),
+        normalized_content,
         file.modified,
     );
 
-    let mut incidents = Vec::new();
-    if config.extraction.extract_incidents {
-        let incident_extractor = IncidentExtractor::new();
-        incidents =
-            incident_extractor.extract_from_markdown(&content, &file.path.display().to_string());
-    }
+    inserter.insert_document(&document).await?;
 
-    let mut addresses = Vec::new();
-    if config.extraction.extract_crypto_addresses {
-        let mut crypto_extractor = CryptoExtractor::new();
-        addresses = crypto_extractor.extract_from_text(
-            &parsed.plain_text,
-            &file.path.display().to_string(),
-            &attribution,
-        );
-    }
-
-    let mut iocs = Vec::new();
-    if config.extraction.extract_iocs {
-        let mut ioc_extractor = IocExtractor::new();
-        iocs = ioc_extractor.extract_from_text(&parsed.plain_text);
-    }
-
-    let stats = inserter
-        .insert_complete_batch(document, incidents, addresses, iocs)
-        .await?;
-
-    info!(
-        "Inserted: {} doc, {} incidents, {} addresses, {} IOCs",
-        stats.documents_inserted,
-        stats.incidents_inserted,
-        stats.addresses_inserted,
-        stats.iocs_inserted
-    );
+    info!("Inserted document: {}", file.relative_path);
 
     Ok(())
 }
@@ -447,21 +422,6 @@ async fn cmd_stats(config: &Config) -> Result<()> {
     let doc_count = client.get_document_count().await?;
     info!("Total documents: {}", doc_count);
 
-    let tables = vec!["incidents", "crypto_addresses", "iocs", "processing_log"];
-
-    for table in tables {
-        if client.table_exists(table).await? {
-            let query = format!("SELECT count() FROM {}", table);
-            let count: u64 = client
-                .get_client()
-                .query(&query)
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            info!("Total {}: {}", table, count);
-        }
-    }
-
     Ok(())
 }
 
@@ -494,3 +454,27 @@ async fn cmd_reset(config: &Config, confirm: bool) -> Result<()> {
 
     Ok(())
 }
+
+
+async fn cmd_mcp(config: &Config, transport: &str) -> Result<()> {
+    info!("Starting MCP server (transport: {})", transport);
+
+    if transport != "stdio" {
+        error!("Only stdio transport is currently supported");
+        return Err(anyhow::anyhow!("Unsupported transport: {}", transport));
+    }
+
+    let mcp_server = GitSummarizeMcp::new(config.clone());
+    
+    info!("MCP server ready. Available tools:");
+    for tool in mcp_server.get_tool_router().list_tools() {
+        info!("  - {}: {}", tool.name, tool.description.as_ref().unwrap_or(&"No description".to_string()));
+    }
+
+    // Run MCP server over stdio
+    info!("Starting stdio transport...");
+    rmcp::handler::server::stdio::run_server(mcp_server.get_tool_router().clone()).await?;
+
+    Ok(())
+}
+

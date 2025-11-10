@@ -10,8 +10,9 @@ A high-performance RAG (Retrieval-Augmented Generation) pipeline for GitHub repo
 - 📊 **RAG Pipeline**: Production-ready retrieval pipeline for LLM applications
 - 🔄 **Incremental Updates**: Smart sync with deduplication
 - 📝 **Markdown Processing**: Advanced parsing and normalization
-- 🔐 **Entity Extraction**: Extract crypto addresses, IOCs, and incidents (optional)
+- 🤖 **MCP Integration**: Model Context Protocol server for agentic tools and local LLMs
 - 🎯 **Flexible Configuration**: TOML config files with environment variable overrides
+- 🌐 **Groq API Support**: Optional integration with Groq embeddings API
 
 ## What is RAG?
 
@@ -422,3 +423,134 @@ For issues and questions:
 ## Authors
 
 - [ℭ𝔦𝔭𝔥𝔢𝔯](https://github.com/cipher-rc5)
+
+
+## MCP (Model Context Protocol) Integration
+
+Git Summarize includes an advanced MCP server that enables integration with agentic tools and local LLM units like Claude Desktop, Cline, and other MCP-compatible clients. The server supports full repository lifecycle management including versioning, selective ingestion, and updates.
+
+### What is MCP?
+
+Model Context Protocol (MCP) is an open protocol that standardizes how applications provide context to LLMs. It enables LLMs to securely access tools, data sources, and services through a consistent interface.
+
+### Starting the MCP Server
+
+```bash
+# Start MCP server with stdio transport
+cargo run --release -- mcp
+
+# Or with custom config
+cargo run --release -- --config my-config.toml mcp
+```
+
+### Available MCP Tools (8 total)
+
+#### 1. **ingest_repository** - Ingest repositories with advanced options
+   - **Parameters:**
+     - `repo_url` (required): GitHub repository URL
+     - `reference` (optional): Branch, tag, or commit SHA to checkout
+     - `subdirs` (optional): Comma-separated list of subdirectories to ingest (e.g., "src,docs")
+     - `force` (optional): Force reprocess all files
+   - **Example:** Ingest only the `src` and `tests` directories from a specific branch
+
+#### 2. **list_repositories** - View all ingested repositories
+   - **Parameters:** None
+   - **Returns:** List of repositories with URL, branch, commit hash, subdirectories, file count, and ingestion timestamp
+   - **Example:** See what repositories have been added to the RAG pipeline
+
+#### 3. **remove_repository** - Remove a repository from tracking
+   - **Parameters:**
+     - `repo_identifier` (required): Repository URL or name
+   - **Returns:** Confirmation of removal
+   - **Note:** Currently removes metadata only; documents remain in database
+
+#### 4. **update_repository** - Update a repository to latest version
+   - **Parameters:**
+     - `repo_identifier` (required): Repository URL or name
+     - `new_reference` (optional): New branch/tag/commit to checkout
+   - **Returns:** Ingestion results with updated version information
+   - **Example:** Update a repository to a new release tag
+
+#### 5. **get_stats** - View pipeline statistics
+   - **Parameters:** None
+   - **Returns:** Document count, repository count, and database info
+
+#### 6. **search_documents** - Search for documents by content
+   - **Parameters:**
+     - `query` (required): Search query text
+     - `limit` (optional): Maximum results (default: 5)
+   - **Note:** Vector search coming soon
+
+#### 7. **get_config** - Display current configuration
+   - **Parameters:** None
+   - **Returns:** Repository, database, and pipeline settings
+
+#### 8. **verify_database** - Check database health
+   - **Parameters:** None
+   - **Returns:** Connection status and schema validity
+
+### Using with Claude Desktop
+
+Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "git_summarize": {
+      "command": "/path/to/git_summarize",
+      "args": ["--config", "/path/to/config.toml", "mcp"]
+    }
+  }
+}
+```
+
+### Using with Cline
+
+Configure in Cline's MCP settings:
+
+```json
+{
+  "name": "git_summarize",
+  "command": "/path/to/git_summarize",
+  "args": ["mcp"],
+  "transport": "stdio"
+}
+```
+
+### Advanced Usage Examples
+
+Once configured, you can ask your LLM assistant:
+
+**Basic Ingestion:**
+- "Ingest the repository https://github.com/anthropics/anthropic-sdk-python"
+
+**Version Control:**
+- "Ingest https://github.com/rust-lang/rust from the stable branch"
+- "Update the rust repository to the beta branch"
+
+**Selective Ingestion:**
+- "Ingest only the 'src' and 'docs' directories from https://github.com/user/repo"
+- "Add https://github.com/org/project but only process the 'api' folder"
+
+**Repository Management:**
+- "List all repositories that have been ingested"
+- "What's the current version of the anthropic-sdk-python repository?"
+- "Remove the rust-lang/rust repository"
+- "Update all my repositories to their latest versions"
+
+**Information Queries:**
+- "What repositories have been ingested? Show me the stats"
+- "Verify the database connection"
+- "Show me the current pipeline configuration"
+
+### Repository Tracking
+
+The MCP server maintains metadata about ingested repositories including:
+- Repository URL and name
+- Current branch/tag/commit hash
+- Subdirectories that were ingested
+- Number of files processed
+- Ingestion timestamp
+
+This enables proper version control and selective updates of your RAG knowledge base.
+

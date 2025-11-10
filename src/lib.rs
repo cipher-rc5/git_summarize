@@ -8,6 +8,7 @@ pub mod database;
 pub mod error;
 pub mod exporter;
 pub mod extractor;
+pub mod mcp;
 pub mod models;
 pub mod parser;
 pub mod pipeline;
@@ -18,16 +19,11 @@ pub use config::{Config, DatabaseConfig, ExtractionConfig, PipelineConfig, Repos
 pub use database::{BatchInserter, LanceDbClient, InsertStats, SchemaManager};
 pub use error::{PipelineError, Result};
 pub use exporter::json::{ExportManifest, ExportedDocument, JsonExporter};
-pub use extractor::{CryptoExtractor, IncidentExtractor, IocExtractor};
-pub use models::{
-    ChainType, CryptoAddress, DatePrecision, Document, Incident, IncidentBuilder, Ioc, IocType,
-};
+pub use models::Document;
 pub use parser::{
     Frontmatter, FrontmatterParser, MarkdownNormalizer, MarkdownParser, ParsedMarkdown,
 };
-pub use pipeline::{
-    FileProcessor, PipelineOrchestrator, PipelineStats, ProcessingResult, ProgressTracker,
-};
+pub use pipeline::{PipelineStats, ProgressTracker};
 pub use repository::{FileClassifier, FileScanner, RepositorySync, ScannedFile};
 pub use utils::{FileTemplate, Validator};
 

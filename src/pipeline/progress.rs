@@ -13,9 +13,6 @@ pub struct PipelineStats {
     pub files_processed: usize,
     pub files_failed: usize,
     pub documents_created: usize,
-    pub crypto_addresses_extracted: usize,
-    pub incidents_extracted: usize,
-    pub iocs_extracted: usize,
     pub total_bytes_processed: u64,
     pub duration_secs: u64,
 }
@@ -46,10 +43,6 @@ impl PipelineStats {
         }
         (self.files_processed as f64 / total as f64) * 100.0
     }
-
-    pub fn total_entities_extracted(&self) -> usize {
-        self.crypto_addresses_extracted + self.incidents_extracted + self.iocs_extracted
-    }
 }
 
 pub struct ProgressTracker {
@@ -58,9 +51,6 @@ pub struct ProgressTracker {
     files_processed: Arc<AtomicUsize>,
     files_failed: Arc<AtomicUsize>,
     documents_created: Arc<AtomicUsize>,
-    crypto_addresses: Arc<AtomicUsize>,
-    incidents: Arc<AtomicUsize>,
-    iocs: Arc<AtomicUsize>,
     bytes_processed: Arc<AtomicU64>,
     start_time: Instant,
 }
@@ -82,9 +72,6 @@ impl ProgressTracker {
             files_processed: Arc::new(AtomicUsize::new(0)),
             files_failed: Arc::new(AtomicUsize::new(0)),
             documents_created: Arc::new(AtomicUsize::new(0)),
-            crypto_addresses: Arc::new(AtomicUsize::new(0)),
-            incidents: Arc::new(AtomicUsize::new(0)),
-            iocs: Arc::new(AtomicUsize::new(0)),
             bytes_processed: Arc::new(AtomicU64::new(0)),
             start_time: Instant::now(),
         }
@@ -104,21 +91,6 @@ impl ProgressTracker {
 
     pub fn add_document(&self) {
         self.documents_created.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn add_crypto_addresses(&self, count: usize) {
-        self.crypto_addresses.fetch_add(count, Ordering::SeqCst);
-        self.update_detail_bar();
-    }
-
-    pub fn add_incidents(&self, count: usize) {
-        self.incidents.fetch_add(count, Ordering::SeqCst);
-        self.update_detail_bar();
-    }
-
-    pub fn add_iocs(&self, count: usize) {
-        self.iocs.fetch_add(count, Ordering::SeqCst);
-        self.update_detail_bar();
     }
 
     pub fn add_bytes_processed(&self, bytes: u64) {
@@ -141,24 +113,16 @@ impl ProgressTracker {
             files_processed: self.files_processed.load(Ordering::SeqCst),
             files_failed: self.files_failed.load(Ordering::SeqCst),
             documents_created: self.documents_created.load(Ordering::SeqCst),
-            crypto_addresses_extracted: self.crypto_addresses.load(Ordering::SeqCst),
-            incidents_extracted: self.incidents.load(Ordering::SeqCst),
-            iocs_extracted: self.iocs.load(Ordering::SeqCst),
             total_bytes_processed: self.bytes_processed.load(Ordering::SeqCst),
             duration_secs: duration,
         }
     }
 
     fn update_detail_bar(&self) {
-        let crypto = self.crypto_addresses.load(Ordering::SeqCst);
-        let incidents = self.incidents.load(Ordering::SeqCst);
-        let iocs = self.iocs.load(Ordering::SeqCst);
+        let documents = self.documents_created.load(Ordering::SeqCst);
         let failed = self.files_failed.load(Ordering::SeqCst);
 
-        let message = format!(
-            "Extracted: {} crypto, {} incidents, {} IOCs | Failed: {}",
-            crypto, incidents, iocs, failed
-        );
+        let message = format!("Documents: {} | Failed: {}", documents, failed);
 
         self.detail_bar.set_message(message);
     }
