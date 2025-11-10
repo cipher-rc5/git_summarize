@@ -25,14 +25,10 @@ pub struct RepositoryConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
-    pub host: String,
-    pub port: u16,
-    pub database: String,
-    #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub password: Option<String>,
+    pub uri: String,
+    pub table_name: String,
     pub batch_size: usize,
+    pub embedding_dim: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -64,7 +60,7 @@ impl Config {
         }
 
         builder = builder.add_source(
-            config::Environment::with_prefix("LAZARUS")
+            config::Environment::with_prefix("GIT_SUMMARIZE")
                 .separator("__")
                 .try_parsing(true),
         );
@@ -84,18 +80,16 @@ impl Config {
     pub fn default_config() -> Self {
         Self {
             repository: RepositoryConfig {
-                source_url: "https://github.com/tayvano/lazarus-bluenoroff-research".to_string(),
+                source_url: "https://github.com/user/example-repo".to_string(),
                 local_path: PathBuf::from("./data_repo"),
                 branch: "main".to_string(),
                 sync_on_start: true,
             },
             database: DatabaseConfig {
-                host: "localhost".to_string(),
-                port: 8123,
-                database: "lazarus_research".to_string(),
-                username: None,
-                password: None,
-                batch_size: 1000,
+                uri: "data/lancedb".to_string(),
+                table_name: "documents".to_string(),
+                batch_size: 100,
+                embedding_dim: 384,
             },
             pipeline: PipelineConfig {
                 parallel_workers: 4,

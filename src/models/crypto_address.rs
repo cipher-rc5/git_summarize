@@ -2,7 +2,6 @@
 // description: cryptocurrency address model with chain detection
 // reference: blockchain address formats
 
-use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,7 +41,7 @@ impl ChainType {
     }
 }
 
-#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoAddress {
     pub address: String,
     pub chain: String,

@@ -1,186 +1,96 @@
 // file: src/database/schema.rs
-// description: database schema management and migrations
-// reference: clickhouse ddl operations
+// description: LanceDB schema management for vector storage
+// reference: https://docs.rs/lancedb
 
-use crate::database::client::ClickHouseClient;
+use crate::database::client::LanceDbClient;
 use crate::error::Result;
+use arrow_schema::{DataType, Field, Schema};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 pub struct SchemaManager<'a> {
-    client: &'a ClickHouseClient,
+    client: &'a LanceDbClient,
 }
 
 impl<'a> SchemaManager<'a> {
-    pub fn new(client: &'a ClickHouseClient) -> Self {
+    pub fn new(client: &'a LanceDbClient) -> Self {
         Self { client }
     }
 
     pub async fn initialize(&self) -> Result<()> {
-        info!("Initializing database schema");
+        info!("Initializing LanceDB schema");
 
-        self.create_documents_table().await?;
-        self.create_incidents_table().await?;
-        self.create_crypto_addresses_table().await?;
-        self.create_iocs_table().await?;
-        self.create_processing_log_table().await?;
+        // Check if the main documents table exists
+        if !self.client.table_exists(self.client.table_name()).await? {
+            info!("Creating documents table with vector embeddings");
+            // Table will be created on first insert with proper schema
+        } else {
+            info!("Documents table already exists");
+        }
 
-        info!("Database schema initialized successfully");
+        info!("LanceDB schema initialized successfully");
         Ok(())
     }
 
     pub async fn verify_schema(&self) -> Result<bool> {
-        let tables = vec![
-            "documents",
-            "incidents",
-            "crypto_addresses",
-            "iocs",
-            "processing_log",
-        ];
+        let table_name = self.client.table_name();
 
-        for table in tables {
-            if !self.client.table_exists(table).await? {
-                warn!("Table '{}' does not exist", table);
-                return Ok(false);
-            }
+        if !self.client.table_exists(table_name).await? {
+            warn!("Table '{}' does not exist", table_name);
+            return Ok(false);
         }
 
-        info!("All required tables exist");
+        info!("Table '{}' exists", table_name);
         Ok(true)
     }
 
-    async fn create_documents_table(&self) -> Result<()> {
-        let query = r#"
-            CREATE TABLE IF NOT EXISTS documents (
-                id UUID DEFAULT generateUUIDv4(),
-                file_path String,
-                relative_path String,
-                content String,
-                content_hash String,
-                file_size UInt64,
-                last_modified UInt64,
-                parsed_at UInt64,
-                normalized Bool DEFAULT false,
-                INDEX path_idx file_path TYPE bloom_filter GRANULARITY 1,
-                INDEX hash_idx content_hash TYPE bloom_filter GRANULARITY 1
-            ) ENGINE = MergeTree
-            ORDER BY (parsed_at, id)
-            PARTITION BY toYYYYMM(toDateTime(parsed_at))
-            SETTINGS index_granularity = 8192
-        "#;
-
-        self.client.get_client().query(query).execute().await?;
-
-        info!("Documents table created/verified");
-        Ok(())
-    }
-
-    async fn create_incidents_table(&self) -> Result<()> {
-        let query = r#"
-            CREATE TABLE IF NOT EXISTS incidents (
-                id UUID DEFAULT generateUUIDv4(),
-                document_id String,
-                title String,
-                date Int64,
-                date_precision String,
-                victim String,
-                attack_vector String,
-                amount_usd Nullable(Float64),
-                description String,
-                source_file String,
-                extracted_at UInt64,
-                INDEX title_idx title TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1,
-                INDEX victim_idx victim TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1
-            ) ENGINE = MergeTree
-            ORDER BY (date, id)
-            SETTINGS index_granularity = 8192
-        "#;
-
-        self.client.get_client().query(query).execute().await?;
-
-        info!("Incidents table created/verified");
-        Ok(())
-    }
-
-    async fn create_crypto_addresses_table(&self) -> Result<()> {
-        let query = r#"
-            CREATE TABLE IF NOT EXISTS crypto_addresses (
-                id UUID DEFAULT generateUUIDv4(),
-                address String,
-                chain String,
-                document_id String,
-                file_path String,
-                context String,
-                attribution String,
-                parsed_at UInt64,
-                INDEX addr_idx address TYPE bloom_filter GRANULARITY 1
-            ) ENGINE = MergeTree
-            ORDER BY (chain, address)
-            SETTINGS index_granularity = 8192
-        "#;
-
-        self.client.get_client().query(query).execute().await?;
-
-        info!("Crypto addresses table created/verified");
-        Ok(())
-    }
-
-    async fn create_iocs_table(&self) -> Result<()> {
-        let query = r#"
-            CREATE TABLE IF NOT EXISTS iocs (
-                id UUID DEFAULT generateUUIDv4(),
-                ioc_type String,
-                value String,
-                document_id String,
-                context String,
-                extracted_at UInt64,
-                INDEX ioc_idx value TYPE bloom_filter GRANULARITY 1
-            ) ENGINE = MergeTree
-            ORDER BY (ioc_type, value)
-            SETTINGS index_granularity = 8192
-        "#;
-
-        self.client.get_client().query(query).execute().await?;
-
-        info!("IOCs table created/verified");
-        Ok(())
-    }
-
-    async fn create_processing_log_table(&self) -> Result<()> {
-        let query = r#"
-            CREATE TABLE IF NOT EXISTS processing_log (
-                id UUID DEFAULT generateUUIDv4(),
-                file_path String,
-                status String,
-                error_message String DEFAULT '',
-                processed_at UInt64,
-                processing_time_ms UInt32
-            ) ENGINE = MergeTree
-            ORDER BY (processed_at, id)
-            PARTITION BY toYYYYMM(toDateTime(processed_at))
-            SETTINGS index_granularity = 8192
-        "#;
-
-        self.client.get_client().query(query).execute().await?;
-
-        info!("Processing log table created/verified");
-        Ok(())
+    /// Returns the Arrow schema for the documents table with vector embeddings
+    pub fn get_documents_schema(embedding_dim: usize) -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("file_path", DataType::Utf8, false),
+            Field::new("relative_path", DataType::Utf8, false),
+            Field::new("content", DataType::Utf8, false),
+            Field::new("content_hash", DataType::Utf8, false),
+            Field::new("file_size", DataType::UInt64, false),
+            Field::new("last_modified", DataType::UInt64, false),
+            Field::new("parsed_at", DataType::UInt64, false),
+            Field::new("normalized", DataType::Boolean, false),
+            // Vector embedding field for RAG
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    embedding_dim as i32,
+                ),
+                false,
+            ),
+            // Optional metadata fields
+            Field::new("title", DataType::Utf8, true),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("language", DataType::Utf8, true),
+            Field::new("repository_url", DataType::Utf8, true),
+        ]))
     }
 
     pub async fn drop_all_tables(&self) -> Result<()> {
-        warn!("Dropping all tables");
+        warn!("Dropping all tables in LanceDB");
 
-        let tables = vec![
-            "documents",
-            "incidents",
-            "crypto_addresses",
-            "iocs",
-            "processing_log",
-        ];
+        let table_name = self.client.table_name();
 
-        for table in tables {
-            let query = format!("DROP TABLE IF EXISTS {}", table);
-            self.client.get_client().query(&query).execute().await?;
-            info!("Dropped table: {}", table);
+        // Drop the main table
+        if self.client.table_exists(table_name).await? {
+            self.client
+                .get_connection()
+                .drop_table(table_name)
+                .await
+                .map_err(|e| {
+                    crate::error::PipelineError::Database(format!(
+                        "Failed to drop table {}: {}",
+                        table_name, e
+                    ))
+                })?;
+            info!("Dropped table: {}", table_name);
         }
 
         Ok(())
@@ -191,24 +101,12 @@ impl<'a> SchemaManager<'a> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    #[ignore] // Requires running ClickHouse instance
-    async fn test_schema_creation() {
-        use crate::config::DatabaseConfig;
+    #[test]
+    fn test_schema_generation() {
+        let schema = SchemaManager::get_documents_schema(384);
+        assert_eq!(schema.fields().len(), 14);
 
-        let config = DatabaseConfig {
-            host: "localhost".to_string(),
-            port: 8123,
-            database: "test_db".to_string(),
-            username: None,
-            password: None,
-            batch_size: 1000,
-        };
-
-        let client = ClickHouseClient::new(config).unwrap();
-        let schema_manager = SchemaManager::new(&client);
-
-        let result = schema_manager.initialize().await;
-        assert!(result.is_ok());
+        let embedding_field = schema.field_with_name("embedding").unwrap();
+        assert!(matches!(embedding_field.data_type(), DataType::FixedSizeList(_, 384)));
     }
 }

@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
-use lazarus_ingest::{
-    BatchInserter, ClickHouseClient, Config, CryptoExtractor, FileClassifier, FileScanner,
+use git_summarize::{
+    BatchInserter, LanceDbClient, Config, CryptoExtractor, FileClassifier, FileScanner,
     IncidentExtractor, IocExtractor, JsonExporter, MarkdownNormalizer, MarkdownParser,
     RepositorySync, SchemaManager, Validator,
 };
@@ -16,10 +16,10 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
-#[command(name = "lazarus_ingest")]
+#[command(name = "git_summarize")]
 #[command(author = "cipher")]
 #[command(version = "0.1.0")]
-#[command(about = "ingest pipeline for lazarus threat research", long_about = None)]
+#[command(about = "RAG pipeline for GitHub repositories using LanceDB", long_about = None)]
 struct Cli {
     #[arg(
         short,
@@ -88,9 +88,9 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    lazarus_ingest::utils::logging::init_logger(cli.color, cli.verbose);
+    git_summarize::utils::logging::init_logger(cli.color, cli.verbose);
 
-    info!("Lazarus Ingestion Pipeline");
+    info!("Git Summarize RAG Pipeline");
     info!("Loading configuration from: {}", cli.config.display());
 
     let config = if cli.config.exists() {
@@ -169,11 +169,12 @@ async fn cmd_ingest(
         cmd_sync(config, false).await?;
     }
 
-    let client = ClickHouseClient::new(config.database.clone())
-        .context("Failed to create ClickHouse client")?;
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
 
     if !client.ping().await? {
-        error!("Cannot connect to ClickHouse");
+        error!("Cannot connect to LanceDB");
         return Err(anyhow::anyhow!("Database connection failed"));
     }
 
@@ -220,11 +221,12 @@ async fn cmd_export(
 ) -> Result<()> {
     info!("Initializing JSON export");
 
-    let client = ClickHouseClient::new(config.database.clone())
-        .context("Failed to create ClickHouse client")?;
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
 
     if !client.ping().await? {
-        error!("Cannot connect to ClickHouse");
+        error!("Cannot connect to LanceDB");
         return Err(anyhow::anyhow!("Database connection failed"));
     }
 
@@ -246,9 +248,9 @@ async fn cmd_export(
 }
 
 async fn process_files(
-    client: &ClickHouseClient,
+    client: &LanceDbClient,
     config: &Config,
-    files: Vec<lazarus_ingest::ScannedFile>,
+    files: Vec<git_summarize::ScannedFile>,
 ) -> Result<usize> {
     let client = Arc::new(client.clone());
     let classifier = Arc::new(FileClassifier::new());
@@ -331,7 +333,7 @@ async fn process_single_file(
     markdown_parser: &MarkdownParser,
     normalizer: &MarkdownNormalizer,
     config: &Config,
-    file: &lazarus_ingest::ScannedFile,
+    file: &git_summarize::ScannedFile,
 ) -> Result<()> {
     Validator::validate_file_path(&file.path)?;
 
@@ -349,7 +351,7 @@ async fn process_single_file(
 
     let attribution = classifier.extract_attribution(&file.path);
 
-    let document = lazarus_ingest::Document::new(
+    let document = git_summarize::Document::new(
         file.path.display().to_string(),
         file.relative_path.clone(),
         normalized_content.clone(),
@@ -397,11 +399,12 @@ async fn process_single_file(
 async fn cmd_verify(config: &Config, create_schema: bool) -> Result<()> {
     info!("Verifying database schema");
 
-    let client = ClickHouseClient::new(config.database.clone())
-        .context("Failed to create ClickHouse client")?;
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
 
     if !client.ping().await? {
-        error!("Cannot connect to ClickHouse");
+        error!("Cannot connect to LanceDB");
         return Err(anyhow::anyhow!("Database connection failed"));
     }
 
@@ -432,11 +435,12 @@ async fn cmd_verify(config: &Config, create_schema: bool) -> Result<()> {
 async fn cmd_stats(config: &Config) -> Result<()> {
     info!("Gathering statistics");
 
-    let client = ClickHouseClient::new(config.database.clone())
-        .context("Failed to create ClickHouse client")?;
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
 
     if !client.ping().await? {
-        error!("Cannot connect to ClickHouse");
+        error!("Cannot connect to LanceDB");
         return Err(anyhow::anyhow!("Database connection failed"));
     }
 
@@ -469,8 +473,9 @@ async fn cmd_reset(config: &Config, confirm: bool) -> Result<()> {
 
     warn!("Resetting database - all data will be lost");
 
-    let client = ClickHouseClient::new(config.database.clone())
-        .context("Failed to create ClickHouse client")?;
+    let client = LanceDbClient::new(config.database.clone())
+        .await
+        .context("Failed to create LanceDB client")?;
 
     let schema_manager = SchemaManager::new(&client);
     schema_manager

@@ -1,119 +1,95 @@
 // file: src/database/client.rs
-// description: clickHouse client wrapper with connection management
-// reference: https://docs.rs/clickhouse
+// description: LanceDB client wrapper with connection management
+// reference: https://docs.rs/lancedb
 
 use crate::config::DatabaseConfig;
 use crate::error::{PipelineError, Result};
-use clickhouse::Client;
+use lancedb::{connect, Connection, Table};
 use tracing::{debug, info};
 
 #[derive(Clone)]
-pub struct ClickHouseClient {
-    client: Client,
+pub struct LanceDbClient {
+    connection: Connection,
     config: DatabaseConfig,
 }
 
-impl ClickHouseClient {
-    pub fn new(config: DatabaseConfig) -> Result<Self> {
-        info!(
-            "Connecting to ClickHouse at {}:{}",
-            config.host, config.port
-        );
+impl LanceDbClient {
+    pub async fn new(config: DatabaseConfig) -> Result<Self> {
+        info!("Connecting to LanceDB at {}", config.uri);
 
-        let url = format!("http://{}:{}", config.host, config.port);
+        let connection = connect(&config.uri)
+            .execute()
+            .await
+            .map_err(|e| PipelineError::Database(format!("Failed to connect to LanceDB: {}", e)))?;
 
-        let mut client = Client::default().with_url(&url);
-
-        if let Some(ref username) = config.username {
-            client = client.with_user(username);
-        }
-
-        if let Some(ref password) = config.password {
-            client = client.with_password(password);
-        }
-
-        client = client.with_database(&config.database);
-
-        Ok(Self { client, config })
+        Ok(Self { connection, config })
     }
 
-    pub fn get_client(&self) -> &Client {
-        &self.client
+    pub fn get_connection(&self) -> &Connection {
+        &self.connection
     }
 
     pub async fn ping(&self) -> Result<bool> {
-        debug!("Pinging ClickHouse server");
+        debug!("Checking LanceDB connection");
 
-        let result = self.client.query("SELECT 1").fetch_one::<u8>().await;
-
-        match result {
+        // Try to list tables as a ping equivalent
+        match self.connection.table_names().execute().await {
             Ok(_) => {
-                info!("ClickHouse connection successful");
+                info!("LanceDB connection successful");
                 Ok(true)
             }
-            Err(e) => Err(PipelineError::Database(e)),
+            Err(e) => Err(PipelineError::Database(format!(
+                "LanceDB connection failed: {}",
+                e
+            ))),
         }
-    }
-
-    pub async fn database_exists(&self) -> Result<bool> {
-        let count: u64 = self
-            .client
-            .query("SELECT count() FROM system.databases WHERE name = ?")
-            .bind(&self.config.database)
-            .fetch_one()
-            .await
-            .map_err(PipelineError::Database)?;
-
-        Ok(count > 0)
     }
 
     pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let count: u64 = self
-            .client
-            .query("SELECT count() FROM system.tables WHERE database = ? AND name = ?")
-            .bind(&self.config.database)
-            .bind(table_name)
-            .fetch_one()
+        let table_names = self
+            .connection
+            .table_names()
+            .execute()
             .await
-            .map_err(PipelineError::Database)?;
+            .map_err(|e| PipelineError::Database(format!("Failed to list tables: {}", e)))?;
 
-        Ok(count > 0)
+        Ok(table_names.iter().any(|name| name == table_name))
     }
 
-    pub async fn get_document_hashes(&self) -> Result<Vec<String>> {
-        if !self.table_exists("documents").await? {
-            return Ok(Vec::new());
-        }
-
-        let query = "SELECT content_hash FROM documents";
-
-        let hashes: Vec<String> = self
-            .client
-            .query(query)
-            .fetch_all()
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        self.connection
+            .open_table(table_name)
+            .execute()
             .await
-            .map_err(PipelineError::Database)?;
-
-        Ok(hashes)
+            .map_err(|e| {
+                PipelineError::Database(format!("Failed to open table {}: {}", table_name, e))
+            })
     }
 
     pub async fn get_document_count(&self) -> Result<u64> {
-        if !self.table_exists("documents").await? {
+        if !self.table_exists(&self.config.table_name).await? {
             return Ok(0);
         }
 
-        let count: u64 = self
-            .client
-            .query("SELECT count() FROM documents")
-            .fetch_one()
+        let table = self.get_table(&self.config.table_name).await?;
+        let count = table
+            .count_rows(None)
             .await
-            .map_err(PipelineError::Database)?;
+            .map_err(|e| PipelineError::Database(format!("Failed to count rows: {}", e)))?;
 
-        Ok(count)
+        Ok(count as u64)
     }
 
     pub fn batch_size(&self) -> usize {
         self.config.batch_size
+    }
+
+    pub fn table_name(&self) -> &str {
+        &self.config.table_name
+    }
+
+    pub fn embedding_dim(&self) -> usize {
+        self.config.embedding_dim
     }
 }
 
@@ -122,17 +98,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_client_creation() {
+    fn test_config() {
         let config = DatabaseConfig {
-            host: "localhost".to_string(),
-            port: 8123,
-            database: "test_db".to_string(),
-            username: None,
-            password: None,
-            batch_size: 1000,
+            uri: "memory://test".to_string(),
+            table_name: "test_table".to_string(),
+            batch_size: 100,
+            embedding_dim: 384,
         };
 
-        let client = ClickHouseClient::new(config);
-        assert!(client.is_ok());
+        assert_eq!(config.uri, "memory://test");
+        assert_eq!(config.table_name, "test_table");
     }
 }
