@@ -6,9 +6,8 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    BatchInserter, LanceDbClient, Config, FileClassifier, FileScanner,
-    JsonExporter, MarkdownNormalizer, MarkdownParser,
-    RepositorySync, SchemaManager, Validator,
+    mcp::GitSummarizeMcp, BatchInserter, Config, FileClassifier, FileScanner, JsonExporter,
+    LanceDbClient, MarkdownNormalizer, MarkdownParser, RepositorySync, SchemaManager, Validator,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,6 +81,12 @@ enum Commands {
         #[arg(long)]
         query: Option<String>,
     },
+
+    /// Start MCP (Model Context Protocol) server for agentic tool integration
+    Mcp {
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+    },
 }
 
 #[tokio::main]
@@ -133,6 +138,9 @@ async fn main() -> Result<()> {
             query,
         } => {
             cmd_export(&config, output, pretty, document_hash, query).await?;
+        }
+        Commands::Mcp { transport } => {
+            cmd_mcp(&config, &transport).await?;
         }
     }
 
@@ -446,3 +454,27 @@ async fn cmd_reset(config: &Config, confirm: bool) -> Result<()> {
 
     Ok(())
 }
+
+
+async fn cmd_mcp(config: &Config, transport: &str) -> Result<()> {
+    info!("Starting MCP server (transport: {})", transport);
+
+    if transport != "stdio" {
+        error!("Only stdio transport is currently supported");
+        return Err(anyhow::anyhow!("Unsupported transport: {}", transport));
+    }
+
+    let mcp_server = GitSummarizeMcp::new(config.clone());
+    
+    info!("MCP server ready. Available tools:");
+    for tool in mcp_server.get_tool_router().list_tools() {
+        info!("  - {}: {}", tool.name, tool.description.as_ref().unwrap_or(&"No description".to_string()));
+    }
+
+    // Run MCP server over stdio
+    info!("Starting stdio transport...");
+    rmcp::handler::server::stdio::run_server(mcp_server.get_tool_router().clone()).await?;
+
+    Ok(())
+}
+

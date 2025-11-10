@@ -8,6 +8,7 @@ pub mod database;
 pub mod error;
 pub mod exporter;
 pub mod extractor;
+pub mod mcp;
 pub mod models;
 pub mod parser;
 pub mod pipeline;

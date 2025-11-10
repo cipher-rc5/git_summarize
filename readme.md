@@ -10,8 +10,9 @@ A high-performance RAG (Retrieval-Augmented Generation) pipeline for GitHub repo
 - 📊 **RAG Pipeline**: Production-ready retrieval pipeline for LLM applications
 - 🔄 **Incremental Updates**: Smart sync with deduplication
 - 📝 **Markdown Processing**: Advanced parsing and normalization
-- 🔐 **Entity Extraction**: Extract crypto addresses, IOCs, and incidents (optional)
+- 🤖 **MCP Integration**: Model Context Protocol server for agentic tools and local LLMs
 - 🎯 **Flexible Configuration**: TOML config files with environment variable overrides
+- 🌐 **Groq API Support**: Optional integration with Groq embeddings API
 
 ## What is RAG?
 
@@ -422,3 +423,81 @@ For issues and questions:
 ## Authors
 
 - [ℭ𝔦𝔭𝔥𝔢𝔯](https://github.com/cipher-rc5)
+
+## MCP (Model Context Protocol) Integration
+
+Git Summarize includes an MCP server that allows integration with agentic tools and local LLM units like Claude Desktop, Cline, and other MCP-compatible clients.
+
+### What is MCP?
+
+Model Context Protocol (MCP) is an open protocol that standardizes how applications provide context to LLMs. It enables LLMs to securely access tools, data sources, and services through a consistent interface.
+
+### Starting the MCP Server
+
+```bash
+# Start MCP server with stdio transport
+cargo run --release -- mcp
+
+# Or with custom config
+cargo run --release -- --config my-config.toml mcp
+```
+
+### Available MCP Tools
+
+1. **ingest_repository**: Ingest a GitHub repository into the RAG pipeline
+   - Parameters: `repo_url`, `branch` (optional), `force` (optional)
+   - Example: Ingest `https://github.com/rust-lang/rust` on branch `main`
+
+2. **get_stats**: Get statistics about ingested documents
+   - No parameters required
+   - Returns: Document count, storage info
+
+3. **search_documents**: Search for documents by content
+   - Parameters: `query`, `limit` (optional)
+   - Note: Vector search coming soon
+
+4. **get_config**: View current configuration
+   - No parameters required
+   - Returns: Repository, database, and pipeline settings
+
+5. **verify_database**: Check database connection and schema
+   - No parameters required
+   - Returns: Connection status and schema validity
+
+### Using with Claude Desktop
+
+Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "git_summarize": {
+      "command": "/path/to/git_summarize",
+      "args": ["--config", "/path/to/config.toml", "mcp"]
+    }
+  }
+}
+```
+
+### Using with Cline
+
+Configure in Cline's MCP settings:
+
+```json
+{
+  "name": "git_summarize",
+  "command": "/path/to/git_summarize",
+  "args": ["mcp"],
+  "transport": "stdio"
+}
+```
+
+### Example MCP Usage
+
+Once configured, you can ask your LLM assistant:
+
+- "Ingest the repository https://github.com/anthropics/anthropic-sdk-python"
+- "What repositories have been ingested? Show me the stats"
+- "Search for documents about authentication"
+- "Verify the database connection"
+
