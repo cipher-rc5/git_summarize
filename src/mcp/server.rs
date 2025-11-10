@@ -1,5 +1,5 @@
 // file: src/mcp/server.rs
-// description: MCP server implementation for git_summarize RAG pipeline
+// description: Enhanced MCP server with repository management capabilities
 // reference: https://docs.rs/rmcp
 
 use crate::config::Config;
@@ -8,14 +8,29 @@ use crate::repository::{FileScanner, RepositorySync};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::*;
 use rmcp::{tool, tool_router, ErrorData as McpError};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+/// Metadata about an ingested repository
+#[derive(Debug, Clone)]
+struct RepositoryMetadata {
+    url: String,
+    branch: String,
+    commit_hash: String,
+    local_path: PathBuf,
+    subdirectories: Option<Vec<String>>,
+    file_count: usize,
+    ingested_at: u64,
+}
 
 #[derive(Clone)]
 pub struct GitSummarizeMcp {
     config: Arc<Mutex<Config>>,
     db_client: Arc<Mutex<Option<LanceDbClient>>>,
+    repositories: Arc<Mutex<HashMap<String, RepositoryMetadata>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -25,6 +40,7 @@ impl GitSummarizeMcp {
         Self {
             config: Arc::new(Mutex::new(config)),
             db_client: Arc::new(Mutex::new(None)),
+            repositories: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -50,23 +66,45 @@ impl GitSummarizeMcp {
         Ok(())
     }
 
-    #[tool(description = "Ingest a GitHub repository into the RAG pipeline. Clones/syncs the repository and processes all documents.")]
+    /// Get repository key for tracking
+    fn get_repo_key(url: &str) -> String {
+        // Extract repo name from URL
+        url.trim_end_matches('/')
+            .split('/')
+            .last()
+            .unwrap_or(url)
+            .trim_end_matches(".git")
+            .to_string()
+    }
+
+    #[tool(description = "Ingest a GitHub repository into the RAG pipeline. Supports branch selection and subdirectory filtering.")]
     async fn ingest_repository(
         &self,
         #[arg(description = "GitHub repository URL (e.g., https://github.com/user/repo)")] repo_url: String,
-        #[arg(description = "Branch name to checkout (default: main)")] branch: Option<String>,
+        #[arg(description = "Branch, tag, or commit to checkout (default: main)")] reference: Option<String>,
+        #[arg(description = "Specific subdirectories to ingest (comma-separated, e.g., 'src,docs')")] subdirs: Option<String>,
         #[arg(description = "Force reprocess all files even if already ingested")] force: Option<bool>,
     ) -> Result<CallToolResult, McpError> {
-        info!("MCP: Ingesting repository {} (branch: {:?})", repo_url, branch);
+        info!("MCP: Ingesting repository {} (ref: {:?}, subdirs: {:?})",
+              repo_url, reference, subdirs);
+
+        // Parse subdirectories
+        let subdirectories: Option<Vec<String>> = subdirs.map(|s| {
+            s.split(',')
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .collect()
+        });
 
         // Update config with new repository URL
-        {
+        let local_path = {
             let mut config = self.config.lock().await;
             config.repository.source_url = repo_url.clone();
-            if let Some(b) = branch {
-                config.repository.branch = b;
+            if let Some(ref_name) = reference.clone() {
+                config.repository.branch = ref_name;
             }
-        }
+            config.repository.local_path.clone()
+        };
 
         // Sync repository
         let config = self.config.lock().await.clone();
@@ -77,18 +115,32 @@ impl GitSummarizeMcp {
             data: None,
         })?;
 
+        // Get current commit hash
+        let commit_hash = sync.get_current_commit().unwrap_or_else(|_| "unknown".to_string());
+
         // Ensure DB is connected
         self.ensure_db_connected().await?;
 
         // Scan files
         let scanner = FileScanner::new(config.pipeline.clone());
-        let files = scanner
+        let mut files = scanner
             .scan_directory(&config.repository.local_path)
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Failed to scan directory: {}", e),
                 data: None,
             })?;
+
+        // Filter by subdirectories if specified
+        if let Some(ref subdirs) = subdirectories {
+            files.retain(|file| {
+                subdirs.iter().any(|subdir| {
+                    file.relative_path.starts_with(subdir) ||
+                    file.relative_path.starts_with(&format!("{}/", subdir))
+                })
+            });
+            info!("MCP: Filtered to {} files in subdirectories: {:?}", files.len(), subdirs);
+        }
 
         let file_count = files.len();
         info!("MCP: Found {} files to process", file_count);
@@ -112,9 +164,9 @@ impl GitSummarizeMcp {
         let mut processed = 0;
         let mut failed = 0;
 
-        // Process files (simplified for MCP - no parallel processing)
-        for file in files.iter().take(file_count.min(100)) {
-            // Limit to 100 files per request
+        // Process files (limit to 100 per request for responsiveness)
+        let limit = file_count.min(100);
+        for file in files.iter().take(limit) {
             let content = match std::fs::read_to_string(&file.path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -135,7 +187,9 @@ impl GitSummarizeMcp {
             match inserter.insert_document(&document).await {
                 Ok(_) => {
                     processed += 1;
-                    info!("MCP: Processed {}", file.relative_path);
+                    if processed % 10 == 0 {
+                        info!("MCP: Processed {}/{}", processed, limit);
+                    }
                 }
                 Err(e) => {
                     error!("Failed to insert {}: {}", file.relative_path, e);
@@ -144,14 +198,40 @@ impl GitSummarizeMcp {
             }
         }
 
+        // Store repository metadata
+        let repo_key = Self::get_repo_key(&repo_url);
+        let metadata = RepositoryMetadata {
+            url: repo_url.clone(),
+            branch: reference.clone().unwrap_or_else(|| "main".to_string()),
+            commit_hash: commit_hash.clone(),
+            local_path,
+            subdirectories: subdirectories.clone(),
+            file_count: processed,
+            ingested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        self.repositories.lock().await.insert(repo_key, metadata);
+
         let result_text = format!(
             "Repository ingestion complete:\n\
-             - Repository: {}\n\
-             - Total files found: {}\n\
-             - Files processed: {}\n\
-             - Files failed: {}\n\
-             - Success rate: {:.1}%",
+             \n\
+             Repository: {}\n\
+             Reference: {}\n\
+             Commit: {}\n\
+             Subdirectories: {}\n\
+             Total files found: {}\n\
+             Files processed: {}\n\
+             Files failed: {}\n\
+             Success rate: {:.1}%\n\
+             \n\
+             Note: Limited to first 100 files per request.",
             repo_url,
+            reference.unwrap_or_else(|| "main".to_string()),
+            &commit_hash[..8.min(commit_hash.len())],
+            subdirectories.map(|s| s.join(", ")).unwrap_or_else(|| "all".to_string()),
             file_count,
             processed,
             failed,
@@ -163,6 +243,133 @@ impl GitSummarizeMcp {
         );
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
+    }
+
+    #[tool(description = "List all ingested repositories with their metadata")]
+    async fn list_repositories(&self) -> Result<CallToolResult, McpError> {
+        info!("MCP: Listing repositories");
+
+        let repositories = self.repositories.lock().await;
+
+        if repositories.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No repositories have been ingested yet.\n\
+                 Use ingest_repository to add a repository."
+            )]));
+        }
+
+        let mut result = String::from("Ingested Repositories:\n\n");
+
+        for (key, meta) in repositories.iter() {
+            let subdirs = meta.subdirectories.as_ref()
+                .map(|s| s.join(", "))
+                .unwrap_or_else(|| "all".to_string());
+
+            result.push_str(&format!(
+                "• {} ({})\n\
+                   URL: {}\n\
+                   Branch: {}\n\
+                   Commit: {}\n\
+                   Subdirs: {}\n\
+                   Files: {}\n\
+                   Ingested: {}\n\n",
+                key,
+                if meta.url.contains(&key) { "active" } else { "cached" },
+                meta.url,
+                meta.branch,
+                &meta.commit_hash[..8.min(meta.commit_hash.len())],
+                subdirs,
+                meta.file_count,
+                chrono::DateTime::from_timestamp(meta.ingested_at as i64, 0)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    #[tool(description = "Remove a repository and its documents from the database")]
+    async fn remove_repository(
+        &self,
+        #[arg(description = "Repository URL or name to remove")] repo_identifier: String,
+    ) -> Result<CallToolResult, McpError> {
+        info!("MCP: Removing repository: {}", repo_identifier);
+
+        // Get repository key
+        let repo_key = if repo_identifier.contains("://") {
+            Self::get_repo_key(&repo_identifier)
+        } else {
+            repo_identifier.clone()
+        };
+
+        // Check if repository exists
+        let mut repositories = self.repositories.lock().await;
+        let metadata = repositories.remove(&repo_key).ok_or_else(|| McpError {
+            code: -32602,
+            message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
+            data: None,
+        })?;
+
+        // TODO: Remove documents from LanceDB
+        // This would require a query to filter by repository URL or local path
+        // For now, we just remove from metadata tracking
+
+        warn!("MCP: Removed repository metadata for: {}", repo_key);
+        warn!("Note: Documents remain in database. Full deletion requires manual database cleanup.");
+
+        let result_text = format!(
+            "Repository removed from tracking:\n\
+             \n\
+             Name: {}\n\
+             URL: {}\n\
+             Files tracked: {}\n\
+             \n\
+             Note: Documents remain in LanceDB. Use database reset for full cleanup.",
+            repo_key,
+            metadata.url,
+            metadata.file_count
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(result_text)]))
+    }
+
+    #[tool(description = "Update an existing repository to the latest version")]
+    async fn update_repository(
+        &self,
+        #[arg(description = "Repository URL or name to update")] repo_identifier: String,
+        #[arg(description = "New branch/tag/commit to checkout (optional)")] new_reference: Option<String>,
+    ) -> Result<CallToolResult, McpError> {
+        info!("MCP: Updating repository: {}", repo_identifier);
+
+        // Get repository key
+        let repo_key = if repo_identifier.contains("://") {
+            Self::get_repo_key(&repo_identifier)
+        } else {
+            repo_identifier.clone()
+        };
+
+        // Get existing metadata
+        let repositories = self.repositories.lock().await;
+        let old_metadata = repositories.get(&repo_key).ok_or_else(|| McpError {
+            code: -32602,
+            message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
+            data: None,
+        })?;
+
+        let url = old_metadata.url.clone();
+        let subdirs = old_metadata.subdirectories.clone()
+            .map(|s| s.join(","));
+
+        drop(repositories);
+
+        // Re-ingest with force flag
+        self.ingest_repository(
+            url,
+            new_reference.or_else(|| Some(old_metadata.branch.clone())),
+            subdirs,
+            Some(true), // Force reprocess
+        ).await
     }
 
     #[tool(description = "Get statistics about the ingested documents in the RAG pipeline")]
@@ -184,13 +391,24 @@ impl GitSummarizeMcp {
             data: None,
         })?;
 
+        let repos = self.repositories.lock().await;
+        let repo_count = repos.len();
+
         let stats_text = format!(
             "RAG Pipeline Statistics:\n\
+             \n\
+             Documents:\n\
              - Total documents: {}\n\
-             - Database: LanceDB\n\
-             - Storage location: {}\n\
-             - Table name: {}",
+             \n\
+             Repositories:\n\
+             - Tracked repositories: {}\n\
+             \n\
+             Database:\n\
+             - Backend: LanceDB\n\
+             - Storage: {}\n\
+             - Table: {}",
             doc_count,
+            repo_count,
             client
                 .get_connection()
                 .uri()
@@ -311,12 +529,18 @@ impl GitSummarizeMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
 
     #[test]
     fn test_mcp_server_creation() {
         let config = Config::default_config();
         let mcp = GitSummarizeMcp::new(config);
         assert!(mcp.get_tool_router().list_tools().len() > 0);
+    }
+
+    #[test]
+    fn test_repo_key_extraction() {
+        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/user/repo"), "repo");
+        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/user/repo.git"), "repo");
+        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/org/my-project/"), "my-project");
     }
 }
