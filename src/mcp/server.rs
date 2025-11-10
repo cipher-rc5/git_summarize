@@ -166,7 +166,25 @@ impl GitSummarizeMcp {
 
         // Process files (limit to 100 per request for responsiveness)
         let limit = file_count.min(100);
+
+        // Get max file size from config
+        let config_guard = self.config.lock().await;
+        let max_file_size_bytes = config_guard.pipeline.max_file_size_mb * 1024 * 1024;
+        drop(config_guard);
+
         for file in files.iter().take(limit) {
+            // Enforce file size limit
+            if file.size > max_file_size_bytes as u64 {
+                warn!(
+                    "Skipping {}: file size {} MB exceeds limit of {} MB",
+                    file.relative_path,
+                    file.size / (1024 * 1024),
+                    max_file_size_bytes / (1024 * 1024)
+                );
+                failed += 1;
+                continue;
+            }
+
             let content = match std::fs::read_to_string(&file.path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -209,7 +227,7 @@ impl GitSummarizeMcp {
             file_count: processed,
             ingested_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::from_secs(0))
                 .as_secs(),
         };
 
@@ -312,8 +330,13 @@ impl GitSummarizeMcp {
         })?;
 
         // TODO: Remove documents from LanceDB
-        // This would require a query to filter by repository URL or local path
-        // For now, we just remove from metadata tracking
+        // PRODUCTION ISSUE: Documents remain in database after repository removal
+        // This is a critical gap that needs implementation before production use.
+        // Required implementation:
+        //   1. Add 'repository_url' field to Document model
+        //   2. Implement LanceDB delete/filter query
+        //   3. Add confirmation prompt for data deletion
+        //   4. Implement soft-delete option
 
         warn!("MCP: Removed repository metadata for: {}", repo_key);
         warn!("Note: Documents remain in database. Full deletion requires manual database cleanup.");
@@ -431,6 +454,16 @@ impl GitSummarizeMcp {
         self.ensure_db_connected().await?;
 
         // TODO: Implement vector similarity search with embeddings
+        // PRODUCTION ISSUE: Search functionality is non-operational
+        // This is a CRITICAL feature gap. Current status:
+        //   - GroqEmbeddingClient exists but is NOT integrated
+        //   - BatchInserter uses dummy embeddings instead of Groq API
+        //   - LanceDB vector search is not implemented
+        // Required implementation:
+        //   1. Integrate GroqEmbeddingClient into BatchInserter
+        //   2. Implement LanceDB vector similarity query
+        //   3. Add hybrid search (vector + keyword)
+        //   4. Implement result ranking
         // For now, return a placeholder response
 
         let result_text = format!(
