@@ -329,7 +329,7 @@ async fn process_files(
 
 async fn process_single_file(
     inserter: &BatchInserter<'_>,
-    classifier: &FileClassifier,
+    _classifier: &FileClassifier,
     markdown_parser: &MarkdownParser,
     normalizer: &MarkdownNormalizer,
     config: &Config,
@@ -344,7 +344,7 @@ async fn process_single_file(
     let normalized_content = if config.extraction.normalize_markdown {
         normalizer.normalize(&content)?
     } else {
-        content.clone()
+        content
     };
 
     let _parsed = markdown_parser.parse(&normalized_content)?;
@@ -352,18 +352,13 @@ async fn process_single_file(
     let document = git_summarize::Document::new(
         file.path.display().to_string(),
         file.relative_path.clone(),
-        normalized_content.clone(),
+        normalized_content,
         file.modified,
     );
 
-    let stats = inserter
-        .insert_document(&document)
-        .await?;
+    inserter.insert_document(&document).await?;
 
-    info!(
-        "Inserted document: {}",
-        file.relative_path
-    );
+    info!("Inserted document: {}", file.relative_path);
 
     Ok(())
 }

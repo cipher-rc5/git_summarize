@@ -22,9 +22,7 @@ pub use models::Document;
 pub use parser::{
     Frontmatter, FrontmatterParser, MarkdownNormalizer, MarkdownParser, ParsedMarkdown,
 };
-pub use pipeline::{
-    FileProcessor, PipelineOrchestrator, PipelineStats, ProcessingResult, ProgressTracker,
-};
+pub use pipeline::{PipelineStats, ProgressTracker};
 pub use repository::{FileClassifier, FileScanner, RepositorySync, ScannedFile};
 pub use utils::{FileTemplate, Validator};
 

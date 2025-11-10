@@ -7,10 +7,9 @@ use crate::database::schema::SchemaManager;
 use crate::error::{PipelineError, Result};
 use crate::models::Document;
 use arrow_array::{
-    BooleanArray, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, UInt64Array,
+    BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
+    UInt64Array,
 };
-use arrow_array::types::Float32Type;
-use arrow_array::Float32Array;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
