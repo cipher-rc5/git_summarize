@@ -11,7 +11,7 @@ description = "RAG pipeline for any GitHub repository using LanceDB"
 anyhow = "1.0.100"
 
 # time
-chrono = "0.4.42"
+chrono = "0.4.41"
 
 # commandline
 clap = { version = "4.5.51", features = ["derive", "env"] }
