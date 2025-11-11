@@ -1,7 +1,6 @@
 // file: src/utils/logging.rs
 // description: tracing subscriber initialization with optional ansi coloring
 
-use colored::*;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 pub fn init_logger(colored_output: bool, verbose: bool) {
@@ -21,24 +20,4 @@ pub fn init_logger(colored_output: bool, verbose: bool) {
         .with(filter)
         .with(fmt_layer)
         .init();
-}
-
-pub fn format_success(msg: &str) -> String {
-    format!("{} {}", "✓".green().bold(), msg.green())
-}
-
-pub fn format_error(msg: &str) -> String {
-    format!("{} {}", "✗".red().bold(), msg.red())
-}
-
-pub fn format_warning(msg: &str) -> String {
-    format!("{} {}", "⚠".yellow().bold(), msg.yellow())
-}
-
-pub fn format_info(msg: &str) -> String {
-    format!("{} {}", "ℹ".blue().bold(), msg)
-}
-
-pub fn format_step(step: usize, total: usize, msg: &str) -> String {
-    format!("{} {}", format!("[{}/{}]", step, total).cyan().bold(), msg)
 }

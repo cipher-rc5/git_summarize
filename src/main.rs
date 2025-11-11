@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    BatchInserter, Config, FileClassifier, FileScanner, GroqEmbeddingClient, JsonExporter,
+    BatchInserter, Config, FileScanner, GroqEmbeddingClient, JsonExporter,
     LanceDbClient, MarkdownNormalizer, MarkdownParser, RepositorySync, SchemaManager, Validator,
     mcp::GitSummarizeMcp,
 };
@@ -283,7 +283,6 @@ async fn process_files(
     files: Vec<git_summarize::ScannedFile>,
 ) -> Result<usize> {
     let client = Arc::new(client.clone());
-    let classifier = Arc::new(FileClassifier::new());
     let markdown_parser = Arc::new(MarkdownParser::new());
     let normalizer = Arc::new(MarkdownNormalizer::new());
     let config = Arc::new(config.clone());
@@ -292,7 +291,6 @@ async fn process_files(
 
     let results = stream::iter(files.into_iter().map(|file| {
         let client = Arc::clone(&client);
-        let classifier = Arc::clone(&classifier);
         let markdown_parser = Arc::clone(&markdown_parser);
         let normalizer = Arc::clone(&normalizer);
         let config = Arc::clone(&config);
@@ -303,7 +301,6 @@ async fn process_files(
 
             let result = process_single_file(
                 &inserter,
-                classifier.as_ref(),
                 markdown_parser.as_ref(),
                 normalizer.as_ref(),
                 config.as_ref(),
@@ -359,7 +356,6 @@ async fn process_files(
 
 async fn process_single_file(
     inserter: &BatchInserter<'_>,
-    _classifier: &FileClassifier,
     markdown_parser: &MarkdownParser,
     normalizer: &MarkdownNormalizer,
     config: &Config,
@@ -377,7 +373,8 @@ async fn process_single_file(
         content
     };
 
-    let _parsed = markdown_parser.parse(&normalized_content)?;
+    // Validate markdown structure
+    markdown_parser.parse(&normalized_content)?;
 
     let document = git_summarize::Document::new(
         file.path.display().to_string(),

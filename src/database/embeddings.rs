@@ -80,12 +80,12 @@ impl GroqEmbeddingClient {
             PipelineError::Database(format!("Failed to parse Groq API response: {}", e))
         })?;
 
-        if let Some(embedding_data) = embedding_response.data.first() {
+        if let Some(embedding_data) = embedding_response.data.into_iter().next() {
             debug!(
                 "Received embedding of dimension {}",
                 embedding_data.embedding.len()
             );
-            Ok(embedding_data.embedding.clone())
+            Ok(embedding_data.embedding)
         } else {
             Err(PipelineError::Database(
                 "No embedding data returned from Groq API".to_string(),
