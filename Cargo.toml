@@ -2,7 +2,7 @@
 name = "git_summarize"
 version = "0.1.0"
 authors = ["ℭ𝔦𝔭𝔥𝔢𝔯", "https://github.com/cipher-rc5"]
-edition = "2024"
+edition = "2021"
 repository = "https://github.com/cipher_rc5/git_summarize"
 description = "RAG pipeline for any GitHub repository using LanceDB"
 
