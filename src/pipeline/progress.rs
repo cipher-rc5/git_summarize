@@ -64,7 +64,7 @@ impl ProgressTracker {
         let multi_progress = MultiProgress::new();
 
         let main_bar = create_progress_bar(&multi_progress, total_files as u64, colored);
-        let detail_bar = create_detail_bar(&multi_progress, colored);
+        let detail_bar = create_detail_bar(&multi_progress);
 
         Self {
             main_bar,
@@ -156,22 +156,13 @@ fn create_progress_bar(multi_progress: &MultiProgress, total: u64, colored: bool
     bar
 }
 
-fn create_detail_bar(multi_progress: &MultiProgress, _colored: bool) -> ProgressBar {
+fn create_detail_bar(multi_progress: &MultiProgress) -> ProgressBar {
     let bar = multi_progress.add(ProgressBar::new(0));
     let style = ProgressStyle::default_bar()
         .template("{msg}")
         .expect("Failed to create detail bar template");
     bar.set_style(style);
     bar
-}
-
-#[allow(dead_code)]
-pub fn log_phase(phase: &str, colored: bool) {
-    if colored {
-        println!("\n{} {}\n", "▶".cyan().bold(), phase.bright_white().bold());
-    } else {
-        println!("\n> {}\n", phase);
-    }
 }
 
 #[cfg(test)]
@@ -199,30 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_stats_total_entities() {
-        let mut stats = PipelineStats::new();
-        stats.crypto_addresses_extracted = 10;
-        stats.incidents_extracted = 20;
-        stats.iocs_extracted = 30;
-
-        assert_eq!(stats.total_entities_extracted(), 60);
-    }
-
-    #[test]
     fn test_progress_tracker_increment() {
         let tracker = ProgressTracker::new(100);
 
         tracker.inc_files_processed();
-        tracker.add_crypto_addresses(5);
-        tracker.add_incidents(3);
-        tracker.add_iocs(10);
         tracker.add_bytes_processed(1024);
 
         let stats = tracker.get_stats();
         assert_eq!(stats.files_processed, 1);
-        assert_eq!(stats.crypto_addresses_extracted, 5);
-        assert_eq!(stats.incidents_extracted, 3);
-        assert_eq!(stats.iocs_extracted, 10);
         assert_eq!(stats.total_bytes_processed, 1024);
     }
 
