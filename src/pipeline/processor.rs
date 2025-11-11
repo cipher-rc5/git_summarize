@@ -70,7 +70,7 @@ impl FileProcessor {
             scanned_file.relative_path.clone(),
             normalized_content.clone(),
             scanned_file.modified,
-            self.config.repository.url.clone(),
+            self.config.repository.source_url.clone(),
         );
 
         if self.normalizer.is_some() {
