@@ -16,16 +16,19 @@ pub mod repository;
 pub mod utils;
 
 pub use config::{Config, DatabaseConfig, ExtractionConfig, PipelineConfig, RepositoryConfig};
-pub use database::{BatchInserter, LanceDbClient, InsertStats, SchemaManager};
+pub use database::{BatchInserter, GroqEmbeddingClient, LanceDbClient, InsertStats, SchemaManager};
 pub use error::{PipelineError, Result};
 pub use exporter::json::{ExportManifest, ExportedDocument, JsonExporter};
-pub use models::Document;
+pub use models::{Document, SearchResult};
 pub use parser::{
     Frontmatter, FrontmatterParser, MarkdownNormalizer, MarkdownParser, ParsedMarkdown,
 };
 pub use pipeline::{PipelineStats, ProgressTracker};
 pub use repository::{FileClassifier, FileScanner, RepositorySync, ScannedFile};
-pub use utils::{FileTemplate, Validator};
+pub use utils::{
+    FileTemplate, HealthCheck, HealthReport, HealthStatus, OperationTimer, PerformanceMetrics,
+    Validator,
+};
 
 #[cfg(test)]
 mod tests {

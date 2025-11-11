@@ -9,59 +9,59 @@ lazy_static! {
     // Cryptocurrency addresses
     pub static ref BTC_ADDRESS: Regex = Regex::new(
         r"(?i)\b(bc1[a-z0-9]{39,59}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"
-    ).unwrap();
+    ).expect("BTC_ADDRESS regex is valid");
 
     pub static ref ETH_ADDRESS: Regex = Regex::new(
         r"(?i)\b0x[a-fA-F0-9]{40}\b"
-    ).unwrap();
+    ).expect("ETH_ADDRESS regex is valid");
 
     pub static ref XMR_ADDRESS: Regex = Regex::new(
         r"\b4[0-9AB][1-9A-HJ-NP-Za-km-z]{93,104}\b"
-    ).unwrap();
+    ).expect("XMR_ADDRESS regex is valid");
 
     pub static ref TRX_ADDRESS: Regex = Regex::new(
         r"\bT[A-Za-z1-9]{33}\b"
-    ).unwrap();
+    ).expect("TRX_ADDRESS regex is valid");
 
     // Network indicators
     pub static ref IP_ADDRESS: Regex = Regex::new(
         r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-    ).unwrap();
+    ).expect("IP_ADDRESS regex is valid");
 
     pub static ref DOMAIN: Regex = Regex::new(
         r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b"
-    ).unwrap();
+    ).expect("DOMAIN regex is valid");
 
     pub static ref EMAIL: Regex = Regex::new(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
-    ).unwrap();
+    ).expect("EMAIL regex is valid");
 
     // File hashes
     pub static ref MD5_HASH: Regex = Regex::new(
         r"\b[a-fA-F0-9]{32}\b"
-    ).unwrap();
+    ).expect("MD5_HASH regex is valid");
 
     pub static ref SHA1_HASH: Regex = Regex::new(
         r"\b[a-fA-F0-9]{40}\b"
-    ).unwrap();
+    ).expect("SHA1_HASH regex is valid");
 
     pub static ref SHA256_HASH: Regex = Regex::new(
         r"\b[a-fA-F0-9]{64}\b"
-    ).unwrap();
+    ).expect("SHA256_HASH regex is valid");
 
     // Financial amounts
     pub static ref AMOUNT_USD: Regex = Regex::new(
         r"\$\s*([0-9,]+(?:\.[0-9]{2})?)\s*(?:million|M|billion|B|thousand|K)?"
-    ).unwrap();
+    ).expect("AMOUNT_USD regex is valid");
 
     // Dates
     pub static ref ISO_DATE: Regex = Regex::new(
         r"\b(\d{4})-(\d{2})-(\d{2})\b"
-    ).unwrap();
+    ).expect("ISO_DATE regex is valid");
 
     pub static ref MONTH_YEAR: Regex = Regex::new(
         r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b"
-    ).unwrap();
+    ).expect("MONTH_YEAR regex is valid");
 }
 
 pub fn is_valid_btc_address(address: &str) -> bool {
