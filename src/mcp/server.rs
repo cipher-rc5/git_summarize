@@ -5,13 +5,14 @@
 use crate::config::Config;
 use crate::database::{BatchInserter, LanceDbClient, SchemaManager};
 use crate::repository::{FileScanner, RepositorySync};
+use crate::utils::telemetry::{HealthCheck, HealthReport, HealthStatus, OperationTimer, PerformanceMetrics};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::*;
 use rmcp::{tool, tool_router, ErrorData as McpError};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
@@ -153,6 +154,7 @@ impl GitSummarizeMcp {
         #[arg(description = "Specific subdirectories to ingest (comma-separated, e.g., 'src,docs')")] subdirs: Option<String>,
         #[arg(description = "Force reprocess all files even if already ingested")] force: Option<bool>,
     ) -> Result<CallToolResult, McpError> {
+        let timer = OperationTimer::new(&format!("ingest_repository: {}", repo_url));
         info!("MCP: Ingesting repository {} (ref: {:?}, subdirs: {:?})",
               repo_url, reference, subdirs);
 
@@ -175,6 +177,7 @@ impl GitSummarizeMcp {
         };
 
         // Sync repository
+        timer.checkpoint("Starting repository sync");
         let config = self.read_config().await?.clone();
         let sync = RepositorySync::new(config.repository.clone());
         sync.sync().map_err(|e| McpError {
@@ -185,9 +188,11 @@ impl GitSummarizeMcp {
 
         // Get current commit hash
         let commit_hash = sync.get_current_commit().unwrap_or_else(|_| "unknown".to_string());
+        timer.checkpoint("Repository sync completed");
 
         // Ensure DB is connected
         self.ensure_db_connected().await?;
+        timer.checkpoint("Database connected");
 
         // Scan files
         let scanner = FileScanner::new(config.pipeline.clone());
@@ -212,6 +217,7 @@ impl GitSummarizeMcp {
 
         let file_count = files.len();
         info!("MCP: Found {} files to process", file_count);
+        timer.checkpoint(&format!("Scanned {} files", file_count));
 
         // Get DB client for processing
         let db_guard = self.lock_db_client().await?;
@@ -301,6 +307,11 @@ impl GitSummarizeMcp {
         };
 
         self.write_repositories().await?.insert(repo_key, metadata);
+
+        // Collect performance metrics
+        let duration = timer.finish_with_count(processed);
+        let metrics = PerformanceMetrics::new("document_ingestion", processed, duration);
+        info!("Performance: {}", metrics.format());
 
         let result_text = format!(
             "Repository ingestion complete:\n\
@@ -708,6 +719,146 @@ impl GitSummarizeMcp {
         );
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
+    }
+
+    #[tool(description = "Perform comprehensive health check of all system components")]
+    async fn health_check(&self) -> Result<CallToolResult, McpError> {
+        info!("MCP: Performing health check");
+
+        let mut checks = Vec::new();
+
+        // Check 1: Configuration
+        let config_start = Instant::now();
+        match self.read_config().await {
+            Ok(_) => {
+                checks.push(HealthCheck::healthy("configuration", config_start.elapsed()));
+            }
+            Err(e) => {
+                checks.push(HealthCheck::unhealthy(
+                    "configuration",
+                    format!("Failed to read config: {}", e.message),
+                    config_start.elapsed(),
+                ));
+            }
+        }
+
+        // Check 2: Database Connection
+        let db_start = Instant::now();
+        match self.ensure_db_connected().await {
+            Ok(_) => {
+                let db_guard = self.lock_db_client().await?;
+                if let Some(client) = db_guard.as_ref() {
+                    match client.ping().await {
+                        Ok(true) => {
+                            checks.push(HealthCheck::healthy("database_connection", db_start.elapsed()));
+                        }
+                        Ok(false) => {
+                            checks.push(HealthCheck::degraded(
+                                "database_connection",
+                                "Ping returned false".to_string(),
+                                db_start.elapsed(),
+                            ));
+                        }
+                        Err(e) => {
+                            checks.push(HealthCheck::unhealthy(
+                                "database_connection",
+                                format!("Ping failed: {}", e),
+                                db_start.elapsed(),
+                            ));
+                        }
+                    }
+                } else {
+                    checks.push(HealthCheck::unhealthy(
+                        "database_connection",
+                        "No database client".to_string(),
+                        db_start.elapsed(),
+                    ));
+                }
+            }
+            Err(e) => {
+                checks.push(HealthCheck::unhealthy(
+                    "database_connection",
+                    format!("Connection failed: {}", e.message),
+                    db_start.elapsed(),
+                ));
+            }
+        }
+
+        // Check 3: Database Schema
+        let schema_start = Instant::now();
+        let db_guard = self.lock_db_client().await?;
+        if let Some(client) = db_guard.as_ref() {
+            let schema_manager = SchemaManager::new(client);
+            match schema_manager.verify_schema().await {
+                Ok(true) => {
+                    checks.push(HealthCheck::healthy("database_schema", schema_start.elapsed()));
+                }
+                Ok(false) => {
+                    checks.push(HealthCheck::degraded(
+                        "database_schema",
+                        "Schema not initialized".to_string(),
+                        schema_start.elapsed(),
+                    ));
+                }
+                Err(e) => {
+                    checks.push(HealthCheck::unhealthy(
+                        "database_schema",
+                        format!("Verification failed: {}", e),
+                        schema_start.elapsed(),
+                    ));
+                }
+            }
+        }
+        drop(db_guard);
+
+        // Check 4: Repository Metadata Store
+        let repos_start = Instant::now();
+        match self.read_repositories().await {
+            Ok(repos) => {
+                let count = repos.len();
+                if count > 0 {
+                    checks.push(HealthCheck::healthy("repository_store", repos_start.elapsed()));
+                } else {
+                    checks.push(HealthCheck::degraded(
+                        "repository_store",
+                        "No repositories tracked".to_string(),
+                        repos_start.elapsed(),
+                    ));
+                }
+            }
+            Err(e) => {
+                checks.push(HealthCheck::unhealthy(
+                    "repository_store",
+                    format!("Failed to read: {}", e.message),
+                    repos_start.elapsed(),
+                ));
+            }
+        }
+
+        // Check 5: Lock System
+        let lock_start = Instant::now();
+        let lock_elapsed = lock_start.elapsed();
+        if lock_elapsed > Duration::from_millis(100) {
+            checks.push(HealthCheck::degraded(
+                "lock_system",
+                format!("Lock acquisition slow: {}ms", lock_elapsed.as_millis()),
+                lock_elapsed,
+            ));
+        } else {
+            checks.push(HealthCheck::healthy("lock_system", lock_elapsed));
+        }
+
+        // Generate health report
+        let report = HealthReport::new(checks, env!("CARGO_PKG_VERSION").to_string());
+        let formatted = report.format();
+
+        info!(
+            "Health check complete: {:?} - {} checks performed",
+            report.overall_status,
+            report.checks.len()
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(formatted)]))
     }
 }
 

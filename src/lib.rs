@@ -25,7 +25,10 @@ pub use parser::{
 };
 pub use pipeline::{PipelineStats, ProgressTracker};
 pub use repository::{FileClassifier, FileScanner, RepositorySync, ScannedFile};
-pub use utils::{FileTemplate, Validator};
+pub use utils::{
+    FileTemplate, HealthCheck, HealthReport, HealthStatus, OperationTimer, PerformanceMetrics,
+    Validator,
+};
 
 #[cfg(test)]
 mod tests {
