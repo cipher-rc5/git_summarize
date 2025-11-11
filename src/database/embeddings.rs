@@ -47,7 +47,10 @@ impl GroqEmbeddingClient {
             model: self.model.clone(),
         };
 
-        debug!("Requesting embedding from Groq API for {} chars", text.len());
+        debug!(
+            "Requesting embedding from Groq API for {} chars",
+            text.len()
+        );
 
         let response = self
             .client
@@ -63,7 +66,10 @@ impl GroqEmbeddingClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(PipelineError::Database(format!(
                 "Groq API request failed with status {}: {}",
                 status, error_text
@@ -75,7 +81,10 @@ impl GroqEmbeddingClient {
         })?;
 
         if let Some(embedding_data) = embedding_response.data.first() {
-            debug!("Received embedding of dimension {}", embedding_data.embedding.len());
+            debug!(
+                "Received embedding of dimension {}",
+                embedding_data.embedding.len()
+            );
             Ok(embedding_data.embedding.clone())
         } else {
             Err(PipelineError::Database(
@@ -90,7 +99,7 @@ impl GroqEmbeddingClient {
         // Simple deterministic embedding based on text hash
         let hash = text.bytes().fold(0u64, |acc, b| acc.wrapping_add(b as u64));
         (0..dim)
-            .map(|i| ((hash.wrapping_add(i as u64) % 1000) as f32 / 1000.0))
+            .map(|i| (hash.wrapping_add(i as u64) % 1000) as f32 / 1000.0)
             .collect()
     }
 }

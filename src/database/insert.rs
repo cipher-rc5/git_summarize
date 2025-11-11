@@ -8,9 +8,10 @@ use crate::database::schema::SchemaManager;
 use crate::error::{PipelineError, Result};
 use crate::models::Document;
 use arrow_array::{
-    BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
-    UInt64Array,
+    ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
+    StringArray, UInt64Array,
 };
+use arrow_schema::{DataType, Field};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -28,14 +29,12 @@ pub struct InsertStats {
 impl<'a> BatchInserter<'a> {
     pub fn new(client: &'a LanceDbClient) -> Self {
         // Try to create Groq client from config if API key is present
-        let embedding_client = client
-            .groq_api_key()
-            .map(|key| {
-                Arc::new(GroqEmbeddingClient::new(
-                    key.clone(),
-                    client.groq_model().to_string(),
-                ))
-            });
+        let embedding_client = client.groq_api_key().map(|key| {
+            Arc::new(GroqEmbeddingClient::new(
+                key.clone(),
+                client.groq_model().to_string(),
+            ))
+        });
 
         if embedding_client.is_some() {
             info!("BatchInserter initialized with Groq API embeddings");
@@ -56,13 +55,12 @@ impl<'a> BatchInserter<'a> {
         let schema = SchemaManager::get_documents_schema(EMBEDDING_DIM);
 
         // Generate embedding using Groq API or fallback
-        let embedding = self.generate_embedding(&document.content, EMBEDDING_DIM).await?;
+        let embedding = self
+            .generate_embedding(&document.content, EMBEDDING_DIM)
+            .await?;
 
-        let record_batch = Self::create_record_batch(
-            schema.clone(),
-            vec![document.clone()],
-            vec![embedding],
-        )?;
+        let record_batch =
+            Self::create_record_batch(schema.clone(), vec![document.clone()], vec![embedding])?;
 
         let table_name = self.client.table_name();
 
@@ -77,9 +75,7 @@ impl<'a> BatchInserter<'a> {
                 )
                 .execute()
                 .await
-                .map_err(|e| {
-                    PipelineError::Database(format!("Failed to create table: {}", e))
-                })?;
+                .map_err(|e| PipelineError::Database(format!("Failed to create table: {}", e)))?;
             info!("Created new table: {}", table_name);
         } else {
             // Append to existing table
@@ -148,9 +144,12 @@ impl<'a> BatchInserter<'a> {
             .flat_map(|emb| emb.iter().copied())
             .collect();
 
-        let embedding_list = FixedSizeListArray::try_new_from_values(
-            embedding_values,
+        let value_field = Arc::new(Field::new("embedding_value", DataType::Float32, false));
+        let embedding_list = FixedSizeListArray::try_new(
+            value_field,
             embeddings[0].len() as i32,
+            Arc::new(embedding_values) as ArrayRef,
+            None,
         )
         .map_err(|e| PipelineError::Database(format!("Failed to create embedding array: {}", e)))?;
 
@@ -239,7 +238,6 @@ impl<'a> BatchInserter<'a> {
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]

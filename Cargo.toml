@@ -2,7 +2,7 @@
 name = "git_summarize"
 version = "0.1.0"
 authors = ["ℭ𝔦𝔭𝔥𝔢𝔯", "https://github.com/cipher-rc5"]
-edition = "2021"
+edition = "2024"
 repository = "https://github.com/cipher_rc5/git_summarize"
 description = "RAG pipeline for any GitHub repository using LanceDB"
 
@@ -17,11 +17,11 @@ chrono = "0.4.41"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 
 # database - LanceDB for vector storage and RAG
-lancedb = "0.21.0"
-arrow = "54.0.0"
-arrow-array = "54.0.0"
-arrow-schema = "54.0.0"
+arrow = "55.2.0"
+arrow-array = "55.2.0"
+arrow-schema = "55.2.0"
 colored = "2.1"
+lancedb = "0.21.0"
 
 # configuration
 config = "0.15.18"
@@ -58,6 +58,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 
 # MCP (Model Context Protocol) for agentic tool integration
 rmcp = "0.4"
+schemars = { version = "1.1.0", features = ["derive"] }
 
 # logging
 tracing = "0.1.41"

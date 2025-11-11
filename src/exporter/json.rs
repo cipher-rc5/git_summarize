@@ -2,13 +2,13 @@
 // description: json export utilities for LanceDB data
 
 use crate::database::client::LanceDbClient;
-use crate::error::{PipelineError, Result};
+use crate::error::Result;
 use crate::models::Document;
 use chrono::Utc;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct JsonExporter {
@@ -50,7 +50,10 @@ impl JsonExporter {
             files: vec![],
         };
 
-        info!("Export complete: {} documents exported", manifest.total_documents);
+        info!(
+            "Export complete: {} documents exported",
+            manifest.total_documents
+        );
         Ok(manifest)
     }
 

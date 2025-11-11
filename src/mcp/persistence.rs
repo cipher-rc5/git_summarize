@@ -5,7 +5,7 @@
 use crate::error::{PipelineError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
@@ -54,9 +54,7 @@ impl MetadataStore {
 
         let contents = fs::read_to_string(&self.storage_path)
             .await
-            .map_err(|e| {
-                PipelineError::Config(format!("Failed to read metadata file: {}", e))
-            })?;
+            .map_err(|e| PipelineError::Config(format!("Failed to read metadata file: {}", e)))?;
 
         self.cache = serde_json::from_str(&contents).map_err(|e| {
             warn!("Failed to parse metadata file, starting fresh: {}", e);
@@ -68,15 +66,12 @@ impl MetadataStore {
     }
 
     pub async fn save(&self) -> Result<()> {
-        let contents = serde_json::to_string_pretty(&self.cache).map_err(|e| {
-            PipelineError::Config(format!("Failed to serialize metadata: {}", e))
-        })?;
+        let contents = serde_json::to_string_pretty(&self.cache)
+            .map_err(|e| PipelineError::Config(format!("Failed to serialize metadata: {}", e)))?;
 
         fs::write(&self.storage_path, contents)
             .await
-            .map_err(|e| {
-                PipelineError::Config(format!("Failed to write metadata file: {}", e))
-            })?;
+            .map_err(|e| PipelineError::Config(format!("Failed to write metadata file: {}", e)))?;
 
         debug!("Saved {} repository metadata entries", self.cache.len());
         Ok(())

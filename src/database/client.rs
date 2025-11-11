@@ -5,7 +5,10 @@
 use crate::config::DatabaseConfig;
 use crate::error::{PipelineError, Result};
 use crate::models::SearchResult;
-use lancedb::{connect, Connection, Table};
+use arrow_array::{Float32Array, StringArray, UInt64Array};
+use futures::StreamExt;
+use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::{Connection, Table, connect};
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
@@ -112,18 +115,18 @@ impl LanceDbClient {
 
         info!("Deleting documents with predicate: {}", predicate);
 
-        table
-            .delete(&predicate)
-            .await
-            .map_err(|e| {
-                PipelineError::Database(format!(
-                    "Failed to delete documents for repository {}: {}",
-                    repository_url, e
-                ))
-            })?;
+        table.delete(&predicate).await.map_err(|e| {
+            PipelineError::Database(format!(
+                "Failed to delete documents for repository {}: {}",
+                repository_url, e
+            ))
+        })?;
 
         // LanceDB delete doesn't return count directly, so we'll return success
-        info!("Successfully deleted documents for repository: {}", repository_url);
+        info!(
+            "Successfully deleted documents for repository: {}",
+            repository_url
+        );
         Ok(0) // LanceDB doesn't return deletion count in this API
     }
 
@@ -153,85 +156,103 @@ impl LanceDbClient {
 
         // Create the search query
         let mut query = table
-            .search(&query_embedding)
+            .vector_search(query_embedding)
+            .map_err(|e| PipelineError::Database(format!("Failed to create vector search: {}", e)))?
             .limit(limit);
 
         // Add repository filter if provided
         if let Some(repo_url) = repository_filter {
             let filter = format!("repository_url = '{}'", repo_url);
-            query = query.filter(&filter);
+            query = query.only_if(&filter);
             debug!("Applied filter: {}", filter);
         }
 
         // Execute the search
-        let results = query
+        let mut results_stream = query
             .execute()
             .await
-            .map_err(|e| {
-                PipelineError::Database(format!("Vector search failed: {}", e))
-            })?;
+            .map_err(|e| PipelineError::Database(format!("Vector search failed: {}", e)))?;
 
         // Convert Arrow RecordBatch results to SearchResult objects
         let mut search_results = Vec::new();
 
-        // Use RecordBatchReader to iterate through results
-        use arrow_array::RecordBatchReader;
-        let schema = results.schema();
-
-        for batch_result in results {
+        while let Some(batch_result) = results_stream.next().await {
             let batch = batch_result.map_err(|e| {
                 PipelineError::Database(format!("Failed to read result batch: {}", e))
             })?;
 
             let num_rows = batch.num_rows();
 
-            // Extract columns
-            use arrow_array::{Array, StringArray, UInt64Array, Float32Array};
-
-            let ids = batch.column_by_name("id")
+            let ids = batch
+                .column_by_name("id")
                 .ok_or_else(|| PipelineError::Database("Missing 'id' column".to_string()))?
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or_else(|| PipelineError::Database("Invalid 'id' column type".to_string()))?;
 
-            let file_paths = batch.column_by_name("file_path")
+            let file_paths = batch
+                .column_by_name("file_path")
                 .ok_or_else(|| PipelineError::Database("Missing 'file_path' column".to_string()))?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'file_path' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'file_path' column type".to_string())
+                })?;
 
-            let relative_paths = batch.column_by_name("relative_path")
-                .ok_or_else(|| PipelineError::Database("Missing 'relative_path' column".to_string()))?
+            let relative_paths = batch
+                .column_by_name("relative_path")
+                .ok_or_else(|| {
+                    PipelineError::Database("Missing 'relative_path' column".to_string())
+                })?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'relative_path' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'relative_path' column type".to_string())
+                })?;
 
-            let contents = batch.column_by_name("content")
+            let contents = batch
+                .column_by_name("content")
                 .ok_or_else(|| PipelineError::Database("Missing 'content' column".to_string()))?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'content' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'content' column type".to_string())
+                })?;
 
-            let repository_urls = batch.column_by_name("repository_url")
-                .ok_or_else(|| PipelineError::Database("Missing 'repository_url' column".to_string()))?
+            let repository_urls = batch
+                .column_by_name("repository_url")
+                .ok_or_else(|| {
+                    PipelineError::Database("Missing 'repository_url' column".to_string())
+                })?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'repository_url' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'repository_url' column type".to_string())
+                })?;
 
-            let file_sizes = batch.column_by_name("file_size")
+            let file_sizes = batch
+                .column_by_name("file_size")
                 .ok_or_else(|| PipelineError::Database("Missing 'file_size' column".to_string()))?
                 .as_any()
                 .downcast_ref::<UInt64Array>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'file_size' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'file_size' column type".to_string())
+                })?;
 
-            let last_modifieds = batch.column_by_name("last_modified")
-                .ok_or_else(|| PipelineError::Database("Missing 'last_modified' column".to_string()))?
+            let last_modifieds = batch
+                .column_by_name("last_modified")
+                .ok_or_else(|| {
+                    PipelineError::Database("Missing 'last_modified' column".to_string())
+                })?
                 .as_any()
                 .downcast_ref::<UInt64Array>()
-                .ok_or_else(|| PipelineError::Database("Invalid 'last_modified' column type".to_string()))?;
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'last_modified' column type".to_string())
+                })?;
 
             // LanceDB returns distance score in a special column
-            let distances = batch.column_by_name("_distance")
+            let distances = batch
+                .column_by_name("_distance")
                 .and_then(|col| col.as_any().downcast_ref::<Float32Array>());
 
             // Convert rows to SearchResult

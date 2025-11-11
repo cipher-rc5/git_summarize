@@ -5,10 +5,16 @@
 use crate::config::Config;
 use crate::database::{BatchInserter, LanceDbClient, SchemaManager};
 use crate::repository::{FileScanner, RepositorySync};
-use crate::utils::telemetry::{HealthCheck, HealthReport, HealthStatus, OperationTimer, PerformanceMetrics};
-use rmcp::handler::server::tool::ToolRouter;
+use crate::utils::telemetry::{HealthCheck, HealthReport, OperationTimer, PerformanceMetrics};
+use rmcp::handler::server::{
+    ServerHandler,
+    tool::{Parameters, ToolRouter},
+};
 use rmcp::model::*;
-use rmcp::{tool, tool_router, ErrorData as McpError};
+use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +33,50 @@ struct RepositoryMetadata {
     subdirectories: Option<Vec<String>>,
     file_count: usize,
     ingested_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct IngestRepositoryParams {
+    #[schemars(description = "GitHub repository URL (e.g., https://github.com/user/repo)")]
+    repo_url: String,
+    #[serde(default)]
+    #[schemars(description = "Branch, tag, or commit to checkout (default: main)")]
+    reference: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Specific subdirectories to ingest (comma-separated, e.g., 'src,docs')"
+    )]
+    subdirectories: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Force reprocess all files even if already ingested")]
+    force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct RemoveRepositoryParams {
+    #[schemars(description = "Repository URL or name to remove")]
+    repo_identifier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct UpdateRepositoryParams {
+    #[schemars(description = "Repository URL or name to update")]
+    repo_identifier: String,
+    #[serde(default)]
+    #[schemars(description = "New branch, tag, or commit to checkout (optional)")]
+    new_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct SearchDocumentsParams {
+    #[schemars(description = "Search query text")]
+    query: String,
+    #[serde(default)]
+    #[schemars(description = "Maximum number of results to return (default: 5)")]
+    limit: Option<usize>,
+    #[serde(default)]
+    #[schemars(description = "Filter by repository URL (optional)")]
+    repository_filter: Option<String>,
 }
 
 /// GitSummarizeMcp server with concurrent access controls
@@ -48,8 +98,15 @@ pub struct GitSummarizeMcp {
 /// Lock acquisition timeout (30 seconds)
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[tool_router]
 impl GitSummarizeMcp {
+    fn make_error(code: i32, message: impl Into<Cow<'static, str>>) -> McpError {
+        McpError {
+            code: ErrorCode(code),
+            message: message.into(),
+            data: None,
+        }
+    }
+
     pub fn new(config: Config) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -63,55 +120,43 @@ impl GitSummarizeMcp {
     async fn read_config(&self) -> Result<tokio::sync::RwLockReadGuard<'_, Config>, McpError> {
         timeout(LOCK_TIMEOUT, self.config.read())
             .await
-            .map_err(|_| McpError {
-                code: -32603,
-                message: "Timeout acquiring config read lock".to_string(),
-                data: None,
-            })
+            .map_err(|_| Self::make_error(-32603, "Timeout acquiring config read lock"))
     }
 
     /// Acquire config write lock with timeout
     async fn write_config(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, Config>, McpError> {
         timeout(LOCK_TIMEOUT, self.config.write())
             .await
-            .map_err(|_| McpError {
-                code: -32603,
-                message: "Timeout acquiring config write lock".to_string(),
-                data: None,
-            })
+            .map_err(|_| Self::make_error(-32603, "Timeout acquiring config write lock"))
     }
 
     /// Acquire repositories read lock with timeout
-    async fn read_repositories(&self) -> Result<tokio::sync::RwLockReadGuard<'_, HashMap<String, RepositoryMetadata>>, McpError> {
+    async fn read_repositories(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, HashMap<String, RepositoryMetadata>>, McpError>
+    {
         timeout(LOCK_TIMEOUT, self.repositories.read())
             .await
-            .map_err(|_| McpError {
-                code: -32603,
-                message: "Timeout acquiring repositories read lock".to_string(),
-                data: None,
-            })
+            .map_err(|_| Self::make_error(-32603, "Timeout acquiring repositories read lock"))
     }
 
     /// Acquire repositories write lock with timeout
-    async fn write_repositories(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, HashMap<String, RepositoryMetadata>>, McpError> {
+    async fn write_repositories(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, HashMap<String, RepositoryMetadata>>, McpError>
+    {
         timeout(LOCK_TIMEOUT, self.repositories.write())
             .await
-            .map_err(|_| McpError {
-                code: -32603,
-                message: "Timeout acquiring repositories write lock".to_string(),
-                data: None,
-            })
+            .map_err(|_| Self::make_error(-32603, "Timeout acquiring repositories write lock"))
     }
 
     /// Acquire db_client lock with timeout
-    async fn lock_db_client(&self) -> Result<tokio::sync::MutexGuard<'_, Option<LanceDbClient>>, McpError> {
+    async fn lock_db_client(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<LanceDbClient>>, McpError> {
         timeout(LOCK_TIMEOUT, self.db_client.lock())
             .await
-            .map_err(|_| McpError {
-                code: -32603,
-                message: "Timeout acquiring database client lock".to_string(),
-                data: None,
-            })
+            .map_err(|_| Self::make_error(-32603, "Timeout acquiring database client lock"))
     }
 
     pub fn get_tool_router(&self) -> &ToolRouter<Self> {
@@ -125,10 +170,8 @@ impl GitSummarizeMcp {
             let config = self.read_config().await?;
             let client = LanceDbClient::new(config.database.clone())
                 .await
-                .map_err(|e| McpError {
-                    code: -32603,
-                    message: format!("Failed to connect to LanceDB: {}", e),
-                    data: None,
+                .map_err(|e| {
+                    Self::make_error(-32603, format!("Failed to connect to LanceDB: {}", e))
                 })?;
             *db_client = Some(client);
         }
@@ -139,32 +182,53 @@ impl GitSummarizeMcp {
     fn get_repo_key(url: &str) -> String {
         // Extract repo name from URL
         url.trim_end_matches('/')
-            .split('/')
-            .last()
+            .rsplit('/')
+            .next()
             .unwrap_or(url)
             .trim_end_matches(".git")
             .to_string()
     }
+}
 
-    #[tool(description = "Ingest a GitHub repository into the RAG pipeline. Supports branch selection and subdirectory filtering.")]
+#[tool_router]
+impl GitSummarizeMcp {
+    #[tool(
+        description = "Ingest a GitHub repository into the RAG pipeline. Supports branch selection and subdirectory filtering."
+    )]
     async fn ingest_repository(
         &self,
-        #[arg(description = "GitHub repository URL (e.g., https://github.com/user/repo)")] repo_url: String,
-        #[arg(description = "Branch, tag, or commit to checkout (default: main)")] reference: Option<String>,
-        #[arg(description = "Specific subdirectories to ingest (comma-separated, e.g., 'src,docs')")] subdirs: Option<String>,
-        #[arg(description = "Force reprocess all files even if already ingested")] force: Option<bool>,
+        Parameters(params): Parameters<IngestRepositoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        let timer = OperationTimer::new(&format!("ingest_repository: {}", repo_url));
-        info!("MCP: Ingesting repository {} (ref: {:?}, subdirs: {:?})",
-              repo_url, reference, subdirs);
+        let IngestRepositoryParams {
+            repo_url,
+            reference,
+            subdirectories: subdir_filter,
+            force,
+        } = params;
 
-        // Parse subdirectories
-        let subdirectories: Option<Vec<String>> = subdirs.map(|s| {
+        let subdirectories: Option<Vec<String>> = subdir_filter.as_ref().map(|s| {
             s.split(',')
                 .map(|d| d.trim().to_string())
                 .filter(|d| !d.is_empty())
                 .collect()
         });
+
+        let subdir_display = subdirectories
+            .as_ref()
+            .map(|s| s.join(", "))
+            .unwrap_or_else(|| "all".to_string());
+
+        let branch_display = reference.clone().unwrap_or_else(|| "main".to_string());
+
+        if force.unwrap_or(false) {
+            info!("MCP: Force reprocess requested for {}", repo_url);
+        }
+
+        let timer = OperationTimer::new(&format!("ingest_repository: {}", repo_url));
+        info!(
+            "MCP: Ingesting repository {} (ref: {:?}, subdirs: {:?})",
+            repo_url, reference, subdir_filter
+        );
 
         // Update config with new repository URL
         let local_path = {
@@ -180,14 +244,13 @@ impl GitSummarizeMcp {
         timer.checkpoint("Starting repository sync");
         let config = self.read_config().await?.clone();
         let sync = RepositorySync::new(config.repository.clone());
-        sync.sync().map_err(|e| McpError {
-            code: -32603,
-            message: format!("Repository sync failed: {}", e),
-            data: None,
-        })?;
+        sync.sync()
+            .map_err(|e| Self::make_error(-32603, format!("Repository sync failed: {}", e)))?;
 
         // Get current commit hash
-        let commit_hash = sync.get_current_commit().unwrap_or_else(|_| "unknown".to_string());
+        let commit_hash = sync
+            .get_current_commit()
+            .unwrap_or_else(|_| "unknown".to_string());
         timer.checkpoint("Repository sync completed");
 
         // Ensure DB is connected
@@ -198,21 +261,21 @@ impl GitSummarizeMcp {
         let scanner = FileScanner::new(config.pipeline.clone());
         let mut files = scanner
             .scan_directory(&config.repository.local_path)
-            .map_err(|e| McpError {
-                code: -32603,
-                message: format!("Failed to scan directory: {}", e),
-                data: None,
-            })?;
+            .map_err(|e| Self::make_error(-32603, format!("Failed to scan directory: {}", e)))?;
 
         // Filter by subdirectories if specified
         if let Some(ref subdirs) = subdirectories {
             files.retain(|file| {
                 subdirs.iter().any(|subdir| {
-                    file.relative_path.starts_with(subdir) ||
-                    file.relative_path.starts_with(&format!("{}/", subdir))
+                    file.relative_path.starts_with(subdir)
+                        || file.relative_path.starts_with(&format!("{}/", subdir))
                 })
             });
-            info!("MCP: Filtered to {} files in subdirectories: {:?}", files.len(), subdirs);
+            info!(
+                "MCP: Filtered to {} files in subdirectories: {:?}",
+                files.len(),
+                subdirs
+            );
         }
 
         let file_count = files.len();
@@ -221,18 +284,14 @@ impl GitSummarizeMcp {
 
         // Get DB client for processing
         let db_guard = self.lock_db_client().await?;
-        let client = db_guard.as_ref().ok_or(McpError {
-            code: -32603,
-            message: "Database not connected".to_string(),
-            data: None,
-        })?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
 
         // Initialize schema
         let schema_manager = SchemaManager::new(client);
-        schema_manager.initialize().await.map_err(|e| McpError {
-            code: -32603,
-            message: format!("Schema initialization failed: {}", e),
-            data: None,
+        schema_manager.initialize().await.map_err(|e| {
+            Self::make_error(-32603, format!("Schema initialization failed: {}", e))
         })?;
 
         let mut processed = 0;
@@ -295,7 +354,7 @@ impl GitSummarizeMcp {
         let repo_key = Self::get_repo_key(&repo_url);
         let metadata = RepositoryMetadata {
             url: repo_url.clone(),
-            branch: reference.clone().unwrap_or_else(|| "main".to_string()),
+            branch: branch_display.clone(),
             commit_hash: commit_hash.clone(),
             local_path,
             subdirectories: subdirectories.clone(),
@@ -316,8 +375,8 @@ impl GitSummarizeMcp {
         let result_text = format!(
             "Repository ingestion complete:\n\
              \n\
-             Repository: {}\n\
-             Reference: {}\n\
+            Repository: {}\n\
+            Reference: {}\n\
              Commit: {}\n\
              Subdirectories: {}\n\
              Total files found: {}\n\
@@ -327,9 +386,9 @@ impl GitSummarizeMcp {
              \n\
              Note: Limited to first 100 files per request.",
             repo_url,
-            reference.unwrap_or_else(|| "main".to_string()),
+            branch_display,
             &commit_hash[..8.min(commit_hash.len())],
-            subdirectories.map(|s| s.join(", ")).unwrap_or_else(|| "all".to_string()),
+            subdir_display,
             file_count,
             processed,
             failed,
@@ -352,28 +411,36 @@ impl GitSummarizeMcp {
         if repositories.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No repositories have been ingested yet.\n\
-                 Use ingest_repository to add a repository."
+                 Use ingest_repository to add a repository.",
             )]));
         }
 
         let mut result = String::from("Ingested Repositories:\n\n");
 
         for (key, meta) in repositories.iter() {
-            let subdirs = meta.subdirectories.as_ref()
+            let subdirs = meta
+                .subdirectories
+                .as_ref()
                 .map(|s| s.join(", "))
                 .unwrap_or_else(|| "all".to_string());
 
             result.push_str(&format!(
                 "• {} ({})\n\
                    URL: {}\n\
+                   Local path: {}\n\
                    Branch: {}\n\
                    Commit: {}\n\
                    Subdirs: {}\n\
                    Files: {}\n\
                    Ingested: {}\n\n",
                 key,
-                if meta.url.contains(&key) { "active" } else { "cached" },
+                if meta.url.contains(key.as_str()) {
+                    "active"
+                } else {
+                    "cached"
+                },
                 meta.url,
+                meta.local_path.display(),
                 meta.branch,
                 &meta.commit_hash[..8.min(meta.commit_hash.len())],
                 subdirs,
@@ -390,8 +457,9 @@ impl GitSummarizeMcp {
     #[tool(description = "Remove a repository and its documents from the database")]
     async fn remove_repository(
         &self,
-        #[arg(description = "Repository URL or name to remove")] repo_identifier: String,
+        Parameters(params): Parameters<RemoveRepositoryParams>,
     ) -> Result<CallToolResult, McpError> {
+        let repo_identifier = params.repo_identifier;
         info!("MCP: Removing repository: {}", repo_identifier);
 
         // Get repository key
@@ -403,11 +471,17 @@ impl GitSummarizeMcp {
 
         // Check if repository exists
         let mut repositories = self.write_repositories().await?;
-        let metadata = repositories.remove(&repo_key).ok_or_else(|| McpError {
-            code: -32602,
-            message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
-            data: None,
-        })?;
+        let metadata = repositories
+            .remove(&repo_key)
+            .ok_or_else(|| {
+                Self::make_error(
+                    -32602,
+                    format!(
+                        "Repository '{}' not found. Use list_repositories to see available repositories.",
+                        repo_key
+                    ),
+                )
+            })?;
         drop(repositories); // Release lock early
 
         // Delete documents from LanceDB
@@ -417,19 +491,23 @@ impl GitSummarizeMcp {
         self.ensure_db_connected().await?;
 
         let db_guard = self.lock_db_client().await?;
-        let client = db_guard.as_ref().ok_or(McpError {
-            code: -32603,
-            message: "Database not connected".to_string(),
-            data: None,
-        })?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
 
         // Delete all documents belonging to this repository
         match client.delete_by_repository(&metadata.url).await {
             Ok(_) => {
-                info!("MCP: Successfully deleted documents for repository: {}", metadata.url);
+                info!(
+                    "MCP: Successfully deleted documents for repository: {}",
+                    metadata.url
+                );
             }
             Err(e) => {
-                warn!("MCP: Failed to delete documents: {}. Metadata removed but documents may remain.", e);
+                warn!(
+                    "MCP: Failed to delete documents: {}. Metadata removed but documents may remain.",
+                    e
+                );
             }
         }
         drop(db_guard);
@@ -442,9 +520,7 @@ impl GitSummarizeMcp {
              Files tracked: {}\n\
              \n\
              All documents and metadata have been removed from the database.",
-            repo_key,
-            metadata.url,
-            metadata.file_count
+            repo_key, metadata.url, metadata.file_count
         );
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
@@ -453,9 +529,12 @@ impl GitSummarizeMcp {
     #[tool(description = "Update an existing repository to the latest version")]
     async fn update_repository(
         &self,
-        #[arg(description = "Repository URL or name to update")] repo_identifier: String,
-        #[arg(description = "New branch/tag/commit to checkout (optional)")] new_reference: Option<String>,
+        Parameters(params): Parameters<UpdateRepositoryParams>,
     ) -> Result<CallToolResult, McpError> {
+        let UpdateRepositoryParams {
+            repo_identifier,
+            new_reference,
+        } = params;
         info!("MCP: Updating repository: {}", repo_identifier);
 
         // Get repository key
@@ -467,25 +546,32 @@ impl GitSummarizeMcp {
 
         // Get existing metadata
         let repositories = self.read_repositories().await?;
-        let old_metadata = repositories.get(&repo_key).ok_or_else(|| McpError {
-            code: -32602,
-            message: format!("Repository '{}' not found. Use list_repositories to see available repositories.", repo_key),
-            data: None,
-        })?;
+        let metadata = repositories
+            .get(&repo_key)
+            .cloned()
+            .ok_or_else(|| {
+                Self::make_error(
+                    -32602,
+                    format!(
+                        "Repository '{}' not found. Use list_repositories to see available repositories.",
+                        repo_key
+                    ),
+                )
+            })?;
 
-        let url = old_metadata.url.clone();
-        let subdirs = old_metadata.subdirectories.clone()
-            .map(|s| s.join(","));
+        let url = metadata.url.clone();
+        let subdirs = metadata.subdirectories.clone().map(|s| s.join(","));
 
         drop(repositories);
 
         // Re-ingest with force flag
-        self.ingest_repository(
-            url,
-            new_reference.or_else(|| Some(old_metadata.branch.clone())),
-            subdirs,
-            Some(true), // Force reprocess
-        ).await
+        self.ingest_repository(Parameters(IngestRepositoryParams {
+            repo_url: url,
+            reference: new_reference.or_else(|| Some(metadata.branch.clone())),
+            subdirectories: subdirs,
+            force: Some(true), // Force reprocess
+        }))
+        .await
     }
 
     #[tool(description = "Get statistics about the ingested documents in the RAG pipeline")]
@@ -495,20 +581,18 @@ impl GitSummarizeMcp {
         self.ensure_db_connected().await?;
 
         let db_guard = self.lock_db_client().await?;
-        let client = db_guard.as_ref().ok_or(McpError {
-            code: -32603,
-            message: "Database not connected".to_string(),
-            data: None,
-        })?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
 
-        let doc_count = client.get_document_count().await.map_err(|e| McpError {
-            code: -32603,
-            message: format!("Failed to get document count: {}", e),
-            data: None,
+        let doc_count = client.get_document_count().await.map_err(|e| {
+            Self::make_error(-32603, format!("Failed to get document count: {}", e))
         })?;
 
         let repos = self.read_repositories().await?;
         let repo_count = repos.len();
+
+        let storage_uri = client.get_connection().uri().to_string();
 
         let stats_text = format!(
             "RAG Pipeline Statistics:\n\
@@ -525,11 +609,7 @@ impl GitSummarizeMcp {
              - Table: {}",
             doc_count,
             repo_count,
-            client
-                .get_connection()
-                .uri()
-                .map(|u| u.to_string())
-                .unwrap_or_else(|_| "unknown".to_string()),
+            storage_uri,
             client.table_name()
         );
 
@@ -539,10 +619,13 @@ impl GitSummarizeMcp {
     #[tool(description = "Search for documents by semantic similarity using vector embeddings")]
     async fn search_documents(
         &self,
-        #[arg(description = "Search query text")] query: String,
-        #[arg(description = "Maximum number of results to return (default: 5)")] limit: Option<usize>,
-        #[arg(description = "Filter by repository URL (optional)")] repository_filter: Option<String>,
+        Parameters(params): Parameters<SearchDocumentsParams>,
     ) -> Result<CallToolResult, McpError> {
+        let SearchDocumentsParams {
+            query,
+            limit,
+            repository_filter,
+        } = params;
         info!("MCP: Searching for documents with query: {}", query);
 
         self.ensure_db_connected().await?;
@@ -551,11 +634,9 @@ impl GitSummarizeMcp {
 
         // Get database client
         let db_guard = self.lock_db_client().await?;
-        let client = db_guard.as_ref().ok_or(McpError {
-            code: -32603,
-            message: "Database not connected".to_string(),
-            data: None,
-        })?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
 
         // Generate embedding for the query
         const EMBEDDING_DIM: usize = 768;
@@ -569,9 +650,15 @@ impl GitSummarizeMcp {
             match groq_client.generate_embedding(&query).await {
                 Ok(embedding) => {
                     if embedding.len() != EMBEDDING_DIM {
-                        warn!("Groq API returned embedding with dimension {}, expected {}. Using fallback.",
-                              embedding.len(), EMBEDDING_DIM);
-                        crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
+                        warn!(
+                            "Groq API returned embedding with dimension {}, expected {}. Using fallback.",
+                            embedding.len(),
+                            EMBEDDING_DIM
+                        );
+                        crate::database::GroqEmbeddingClient::generate_fallback_embedding(
+                            &query,
+                            EMBEDDING_DIM,
+                        )
                     } else {
                         info!("Using Groq API embedding for search query");
                         embedding
@@ -579,7 +666,10 @@ impl GitSummarizeMcp {
                 }
                 Err(e) => {
                     warn!("Groq API embedding failed: {}. Using fallback.", e);
-                    crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
+                    crate::database::GroqEmbeddingClient::generate_fallback_embedding(
+                        &query,
+                        EMBEDDING_DIM,
+                    )
                 }
             }
         } else {
@@ -589,17 +679,9 @@ impl GitSummarizeMcp {
 
         // Perform vector search
         let results = client
-            .vector_search(
-                query_embedding,
-                search_limit,
-                repository_filter.as_deref(),
-            )
+            .vector_search(query_embedding, search_limit, repository_filter.as_deref())
             .await
-            .map_err(|e| McpError {
-                code: -32603,
-                message: format!("Vector search failed: {}", e),
-                data: None,
-            })?;
+            .map_err(|e| Self::make_error(-32603, format!("Vector search failed: {}", e)))?;
 
         drop(db_guard);
 
@@ -690,32 +772,36 @@ impl GitSummarizeMcp {
         self.ensure_db_connected().await?;
 
         let db_guard = self.lock_db_client().await?;
-        let client = db_guard.as_ref().ok_or(McpError {
-            code: -32603,
-            message: "Database not connected".to_string(),
-            data: None,
-        })?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
 
-        let ping_result = client.ping().await.map_err(|e| McpError {
-            code: -32603,
-            message: format!("Database ping failed: {}", e),
-            data: None,
-        })?;
+        let ping_result = client
+            .ping()
+            .await
+            .map_err(|e| Self::make_error(-32603, format!("Database ping failed: {}", e)))?;
 
         let schema_manager = SchemaManager::new(client);
-        let schema_valid = schema_manager.verify_schema().await.map_err(|e| McpError {
-            code: -32603,
-            message: format!("Schema verification failed: {}", e),
-            data: None,
-        })?;
+        let schema_valid = schema_manager
+            .verify_schema()
+            .await
+            .map_err(|e| Self::make_error(-32603, format!("Schema verification failed: {}", e)))?;
 
         let result_text = format!(
             "Database Verification:\n\
              - Connection: {}\n\
              - Schema: {}\n\
              - Status: Ready for operations",
-            if ping_result { "✓ Success" } else { "✗ Failed" },
-            if schema_valid { "✓ Valid" } else { "✗ Invalid" }
+            if ping_result {
+                "✓ Success"
+            } else {
+                "✗ Failed"
+            },
+            if schema_valid {
+                "✓ Valid"
+            } else {
+                "✗ Invalid"
+            }
         );
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
@@ -731,7 +817,10 @@ impl GitSummarizeMcp {
         let config_start = Instant::now();
         match self.read_config().await {
             Ok(_) => {
-                checks.push(HealthCheck::healthy("configuration", config_start.elapsed()));
+                checks.push(HealthCheck::healthy(
+                    "configuration",
+                    config_start.elapsed(),
+                ));
             }
             Err(e) => {
                 checks.push(HealthCheck::unhealthy(
@@ -750,7 +839,10 @@ impl GitSummarizeMcp {
                 if let Some(client) = db_guard.as_ref() {
                     match client.ping().await {
                         Ok(true) => {
-                            checks.push(HealthCheck::healthy("database_connection", db_start.elapsed()));
+                            checks.push(HealthCheck::healthy(
+                                "database_connection",
+                                db_start.elapsed(),
+                            ));
                         }
                         Ok(false) => {
                             checks.push(HealthCheck::degraded(
@@ -791,7 +883,10 @@ impl GitSummarizeMcp {
             let schema_manager = SchemaManager::new(client);
             match schema_manager.verify_schema().await {
                 Ok(true) => {
-                    checks.push(HealthCheck::healthy("database_schema", schema_start.elapsed()));
+                    checks.push(HealthCheck::healthy(
+                        "database_schema",
+                        schema_start.elapsed(),
+                    ));
                 }
                 Ok(false) => {
                     checks.push(HealthCheck::degraded(
@@ -817,7 +912,10 @@ impl GitSummarizeMcp {
             Ok(repos) => {
                 let count = repos.len();
                 if count > 0 {
-                    checks.push(HealthCheck::healthy("repository_store", repos_start.elapsed()));
+                    checks.push(HealthCheck::healthy(
+                        "repository_store",
+                        repos_start.elapsed(),
+                    ));
                 } else {
                     checks.push(HealthCheck::degraded(
                         "repository_store",
@@ -862,6 +960,23 @@ impl GitSummarizeMcp {
     }
 }
 
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for GitSummarizeMcp {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            protocol_version: ProtocolVersion::default(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            server_info: Implementation {
+                name: "Git Summarize MCP".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            },
+            instructions: Some(
+                "Ingest, manage, and semantically search Git repositories with LanceDB.".into(),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,13 +985,22 @@ mod tests {
     fn test_mcp_server_creation() {
         let config = Config::default_config();
         let mcp = GitSummarizeMcp::new(config);
-        assert!(mcp.get_tool_router().list_tools().len() > 0);
+        assert!(mcp.get_tool_router().list_all().len() > 0);
     }
 
     #[test]
     fn test_repo_key_extraction() {
-        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/user/repo"), "repo");
-        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/user/repo.git"), "repo");
-        assert_eq!(GitSummarizeMcp::get_repo_key("https://github.com/org/my-project/"), "my-project");
+        assert_eq!(
+            GitSummarizeMcp::get_repo_key("https://github.com/user/repo"),
+            "repo"
+        );
+        assert_eq!(
+            GitSummarizeMcp::get_repo_key("https://github.com/user/repo.git"),
+            "repo"
+        );
+        assert_eq!(
+            GitSummarizeMcp::get_repo_key("https://github.com/org/my-project/"),
+            "my-project"
+        );
     }
 }

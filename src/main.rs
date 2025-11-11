@@ -6,13 +6,15 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use futures::stream::{self, StreamExt};
 use git_summarize::{
-    mcp::GitSummarizeMcp, BatchInserter, Config, FileClassifier, FileScanner,
-    GroqEmbeddingClient, JsonExporter, LanceDbClient, MarkdownNormalizer, MarkdownParser,
-    RepositorySync, SchemaManager, Validator,
+    BatchInserter, Config, FileClassifier, FileScanner, GroqEmbeddingClient, JsonExporter,
+    LanceDbClient, MarkdownNormalizer, MarkdownParser, RepositorySync, SchemaManager, Validator,
+    mcp::GitSummarizeMcp,
 };
+use rmcp::service::ServiceExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::io::{stdin, stdout};
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
@@ -476,7 +478,6 @@ async fn cmd_reset(config: &Config, confirm: bool) -> Result<()> {
     Ok(())
 }
 
-
 async fn cmd_mcp(config: &Config, transport: &str) -> Result<()> {
     info!("Starting MCP server (transport: {})", transport);
 
@@ -486,15 +487,21 @@ async fn cmd_mcp(config: &Config, transport: &str) -> Result<()> {
     }
 
     let mcp_server = GitSummarizeMcp::new(config.clone());
-    
+
     info!("MCP server ready. Available tools:");
-    for tool in mcp_server.get_tool_router().list_tools() {
-        info!("  - {}: {}", tool.name, tool.description.as_ref().unwrap_or(&"No description".to_string()));
+    for tool in mcp_server.get_tool_router().list_all() {
+        let description = tool.description.as_deref().unwrap_or("No description");
+        info!("  - {}: {}", tool.name, description);
     }
 
-    // Run MCP server over stdio
     info!("Starting stdio transport...");
-    rmcp::handler::server::stdio::run_server(mcp_server.get_tool_router().clone()).await?;
+    let running = mcp_server
+        .clone()
+        .serve((stdin(), stdout()))
+        .await
+        .context("Failed to start MCP server over stdio")?;
+    let quit_reason = running.waiting().await.context("MCP server task failed")?;
+    info!("MCP server stopped: {:?}", quit_reason);
 
     Ok(())
 }
@@ -520,10 +527,8 @@ async fn cmd_search(
     const EMBEDDING_DIM: usize = 768;
     let query_embedding = if let Some(api_key) = &config.database.groq_api_key {
         info!("Using Groq API for query embedding");
-        let groq_client = GroqEmbeddingClient::new(
-            api_key.clone(),
-            config.database.groq_model.clone(),
-        );
+        let groq_client =
+            GroqEmbeddingClient::new(api_key.clone(), config.database.groq_model.clone());
 
         match groq_client.generate_embedding(query).await {
             Ok(embedding) => {
@@ -569,7 +574,12 @@ async fn cmd_search(
     println!("{}", "=".repeat(80));
 
     for (idx, result) in results.iter().enumerate() {
-        println!("\n{}. {} (Score: {:.4})", idx + 1, result.relative_path, result.score);
+        println!(
+            "\n{}. {} (Score: {:.4})",
+            idx + 1,
+            result.relative_path,
+            result.score
+        );
         println!("   Repository: {}", result.repository_url);
 
         if let Some(distance) = result.distance {
@@ -594,4 +604,3 @@ async fn cmd_search(
 
     Ok(())
 }
-
