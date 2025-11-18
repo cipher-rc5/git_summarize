@@ -43,6 +43,22 @@ pub struct PipelineConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExtractionConfig {
     pub normalize_markdown: bool,
+    #[serde(default)]
+    pub categories: Vec<CategoryRule>,
+    #[serde(default)]
+    pub topics: Vec<TopicRule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CategoryRule {
+    pub keywords: Vec<String>,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TopicRule {
+    pub keyword: String,
+    pub topic: String,
 }
 
 impl Config {
@@ -102,6 +118,8 @@ impl Config {
             },
             extraction: ExtractionConfig {
                 normalize_markdown: true,
+                categories: vec![],
+                topics: vec![],
             },
         }
     }

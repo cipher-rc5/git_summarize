@@ -373,14 +373,116 @@ cargo clippy -- -D warnings
 cargo check
 ```
 
+## Custom Classification
+
+Git Summarize supports configurable file classification based on path keywords, making it adaptable to any type of codebase or documentation repository.
+
+### Configuring Categories
+
+Categories provide broad classification of files based on their path. Configure in `config/default.toml`:
+
+```toml
+[[extraction.categories]]
+keywords = ["frontend", "ui", "components", "views"]
+category = "frontend"
+
+[[extraction.categories]]
+keywords = ["backend", "api", "server", "services"]
+category = "backend"
+
+[[extraction.categories]]
+keywords = ["tests", "spec", "__tests__", "test"]
+category = "testing"
+```
+
+### Configuring Topics
+
+Topics provide more granular subject identification:
+
+```toml
+[[extraction.topics]]
+keyword = "authentication"
+topic = "auth"
+
+[[extraction.topics]]
+keyword = "database"
+topic = "data_layer"
+
+[[extraction.topics]]
+keyword = "payment"
+topic = "billing"
+```
+
+### Example Configurations
+
+**For a Web Application:**
+```toml
+[[extraction.categories]]
+keywords = ["frontend", "client", "public"]
+category = "frontend"
+
+[[extraction.categories]]
+keywords = ["backend", "server", "api"]
+category = "backend"
+
+[[extraction.topics]]
+keyword = "authentication"
+topic = "auth"
+```
+
+**For a Data Science Project:**
+```toml
+[[extraction.categories]]
+keywords = ["notebooks", "analysis"]
+category = "analysis"
+
+[[extraction.categories]]
+keywords = ["models", "training", "ml"]
+category = "machine_learning"
+
+[[extraction.topics]]
+keyword = "visualization"
+topic = "viz"
+```
+
+**For Documentation Sites:**
+```toml
+[[extraction.categories]]
+keywords = ["tutorials", "guides"]
+category = "learning"
+
+[[extraction.categories]]
+keywords = ["api", "reference"]
+category = "reference_docs"
+
+[[extraction.topics]]
+keyword = "getting-started"
+topic = "quickstart"
+```
+
+## Entity Extraction Patterns
+
+The `extractor` module provides pre-compiled regex patterns for extracting various entities from text. These patterns are organized by category and can be used selectively:
+
+**Network & Web**: IP addresses, domains, emails, URLs
+**Cryptographic Hashes**: MD5, SHA-1, SHA-256
+**Date & Time**: ISO dates, month-year formats
+**Numeric**: Currency amounts, version numbers
+**Code**: GitHub repository references, hex colors
+**Blockchain** (optional): Bitcoin, Ethereum, Monero, Tron addresses
+
+Use these patterns in your custom extraction logic as needed. See `src/extractor/patterns.rs` for the full list.
+
 ## Use Cases
 
 - **Documentation RAG**: Query codebases with natural language
 - **Code Analysis**: Semantic search across repositories
-- **Knowledge Bases**: Build searchable documentation
+- **Knowledge Bases**: Build searchable documentation libraries
 - **Research**: Analyze open-source projects at scale
-- **Security**: Track vulnerabilities and incidents
-- **Compliance**: Monitor code for policy violations
+- **Technical Writing**: Index and search large documentation sites
+- **Project Management**: Track and categorize project artifacts
+- **Learning Platforms**: Build searchable educational content
+- **API Documentation**: Create searchable API reference databases
 
 ## Roadmap
 

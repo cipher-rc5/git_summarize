@@ -57,3 +57,54 @@ max_file_size_mb = 10
 [extraction]
 # Normalize markdown before extraction
 normalize_markdown = true
+
+# Custom categories for classifying files based on path keywords
+# Each category can have multiple keywords that trigger its classification
+# Example configurations for different types of projects:
+
+# For a web application project:
+# [[extraction.categories]]
+# keywords = ["frontend", "ui", "components", "views"]
+# category = "frontend"
+#
+# [[extraction.categories]]
+# keywords = ["backend", "api", "server", "services"]
+# category = "backend"
+#
+# [[extraction.categories]]
+# keywords = ["tests", "spec", "__tests__", "test"]
+# category = "testing"
+
+# For a data science project:
+# [[extraction.categories]]
+# keywords = ["notebooks", "analysis", "exploration"]
+# category = "analysis"
+#
+# [[extraction.categories]]
+# keywords = ["models", "training", "ml"]
+# category = "machine_learning"
+
+# Custom topics for identifying specific subjects in file paths
+# Topics are more granular than categories
+
+# For a web application:
+# [[extraction.topics]]
+# keyword = "authentication"
+# topic = "auth"
+#
+# [[extraction.topics]]
+# keyword = "database"
+# topic = "data_layer"
+#
+# [[extraction.topics]]
+# keyword = "payment"
+# topic = "billing"
+
+# For documentation:
+# [[extraction.topics]]
+# keyword = "tutorial"
+# topic = "learning"
+#
+# [[extraction.topics]]
+# keyword = "api"
+# topic = "api_reference"

@@ -1,49 +1,44 @@
 // file: src/repository/classifier.rs
-// description: file classification and attribution extraction
-// reference: internal classification logic
+// description: file classification and category extraction
+// reference: configurable path-based classification
 
+use crate::config::{CategoryRule, TopicRule};
 use std::path::Path;
 
-pub struct FileClassifier;
+pub struct FileClassifier {
+    categories: Vec<CategoryRule>,
+    topics: Vec<TopicRule>,
+}
 
 impl FileClassifier {
-    pub fn new() -> Self {
-        Self
+    pub fn new(categories: Vec<CategoryRule>, topics: Vec<TopicRule>) -> Self {
+        Self { categories, topics }
     }
 
-    pub fn extract_attribution(&self, path: &Path) -> String {
+    /// Extract category from file path based on configured rules.
+    /// Returns the first matching category or "general" as default.
+    pub fn extract_category(&self, path: &Path) -> String {
         let path_str = path.to_string_lossy();
 
-        if path_str.contains("hacks_and_thefts") || path_str.contains("hacks-and-thefts") {
-            "hacks_and_thefts".to_string()
-        } else if path_str.contains("dprk_it_workers") || path_str.contains("dprk-it-workers") {
-            "dprk_it_workers".to_string()
-        } else if path_str.contains("lazarus") {
-            "lazarus_group".to_string()
-        } else if path_str.contains("bluenoroff") {
-            "bluenoroff_group".to_string()
-        } else if path_str.contains("apt38") {
-            "apt38".to_string()
-        } else {
-            "general".to_string()
+        for rule in &self.categories {
+            for keyword in &rule.keywords {
+                if path_str.contains(keyword) {
+                    return rule.category.clone();
+                }
+            }
         }
+
+        "general".to_string()
     }
 
+    /// Extract topic from file path based on configured rules.
+    /// Returns the first matching topic or None.
     pub fn extract_topic(&self, path: &Path) -> Option<String> {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        let topics = [
-            ("exchange", "cryptocurrency_exchange"),
-            ("defi", "defi_protocol"),
-            ("wallet", "wallet_compromise"),
-            ("supply_chain", "supply_chain_attack"),
-            ("malware", "malware_campaign"),
-            ("phishing", "phishing_campaign"),
-        ];
-
-        for (keyword, topic) in &topics {
-            if path_str.contains(keyword) {
-                return Some(topic.to_string());
+        for rule in &self.topics {
+            if path_str.contains(&rule.keyword.to_lowercase()) {
+                return Some(rule.topic.clone());
             }
         }
 
@@ -63,7 +58,7 @@ impl FileClassifier {
 
 impl Default for FileClassifier {
     fn default() -> Self {
-        Self::new()
+        Self::new(vec![], vec![])
     }
 }
 
@@ -72,33 +67,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_attribution_extraction() {
-        let classifier = FileClassifier::new();
+    fn test_category_extraction_with_rules() {
+        let categories = vec![
+            CategoryRule {
+                keywords: vec!["frontend".to_string(), "ui".to_string()],
+                category: "frontend".to_string(),
+            },
+            CategoryRule {
+                keywords: vec!["backend".to_string(), "api".to_string()],
+                category: "backend".to_string(),
+            },
+        ];
 
-        let path = Path::new("/repo/hacks_and_thefts/ronin_hack.md");
-        assert_eq!(classifier.extract_attribution(path), "hacks_and_thefts");
+        let classifier = FileClassifier::new(categories, vec![]);
 
-        let path = Path::new("/repo/dprk_it_workers/infiltration.md");
-        assert_eq!(classifier.extract_attribution(path), "dprk_it_workers");
+        let path = Path::new("/repo/frontend/components/button.tsx");
+        assert_eq!(classifier.extract_category(path), "frontend");
+
+        let path = Path::new("/repo/backend/api/users.rs");
+        assert_eq!(classifier.extract_category(path), "backend");
+
+        let path = Path::new("/repo/docs/readme.md");
+        assert_eq!(classifier.extract_category(path), "general");
     }
 
     #[test]
-    fn test_topic_extraction() {
-        let classifier = FileClassifier::new();
+    fn test_category_extraction_no_rules() {
+        let classifier = FileClassifier::new(vec![], vec![]);
 
-        let path = Path::new("/repo/exchange_hack.md");
-        assert_eq!(
-            classifier.extract_topic(path),
-            Some("cryptocurrency_exchange".to_string())
-        );
+        let path = Path::new("/repo/anything/file.md");
+        assert_eq!(classifier.extract_category(path), "general");
+    }
+
+    #[test]
+    fn test_topic_extraction_with_rules() {
+        let topics = vec![
+            TopicRule {
+                keyword: "authentication".to_string(),
+                topic: "auth".to_string(),
+            },
+            TopicRule {
+                keyword: "database".to_string(),
+                topic: "data".to_string(),
+            },
+        ];
+
+        let classifier = FileClassifier::new(vec![], topics);
+
+        let path = Path::new("/repo/authentication/login.md");
+        assert_eq!(classifier.extract_topic(path), Some("auth".to_string()));
+
+        let path = Path::new("/repo/docs/database_schema.md");
+        assert_eq!(classifier.extract_topic(path), Some("data".to_string()));
+
+        let path = Path::new("/repo/frontend/button.tsx");
+        assert_eq!(classifier.extract_topic(path), None);
+    }
+
+    #[test]
+    fn test_topic_extraction_no_rules() {
+        let classifier = FileClassifier::new(vec![], vec![]);
+
+        let path = Path::new("/repo/anything/file.md");
+        assert_eq!(classifier.extract_topic(path), None);
     }
 
     #[test]
     fn test_summary_detection() {
-        let classifier = FileClassifier::new();
+        let classifier = FileClassifier::new(vec![], vec![]);
 
         assert!(classifier.is_summary_file(Path::new("README.md")));
         assert!(classifier.is_summary_file(Path::new("summary.md")));
-        assert!(!classifier.is_summary_file(Path::new("incident.md")));
+        assert!(classifier.is_summary_file(Path::new("index.md")));
+        assert!(!classifier.is_summary_file(Path::new("implementation.md")));
+    }
+
+    #[test]
+    fn test_multiple_keywords_same_category() {
+        let categories = vec![CategoryRule {
+            keywords: vec!["tests".to_string(), "spec".to_string(), "__tests__".to_string()],
+            category: "testing".to_string(),
+        }];
+
+        let classifier = FileClassifier::new(categories, vec![]);
+
+        assert_eq!(
+            classifier.extract_category(Path::new("/repo/tests/unit.rs")),
+            "testing"
+        );
+        assert_eq!(
+            classifier.extract_category(Path::new("/repo/component.spec.ts")),
+            "testing"
+        );
+        assert_eq!(
+            classifier.extract_category(Path::new("/repo/__tests__/app.test.js")),
+            "testing"
+        );
     }
 }
