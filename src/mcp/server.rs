@@ -4,6 +4,7 @@
 
 use crate::config::Config;
 use crate::database::{BatchInserter, LanceDbClient, SchemaManager};
+use crate::mcp::persistence::RepositoryMetadata;
 use crate::repository::{FileScanner, RepositorySync};
 use crate::utils::telemetry::{HealthCheck, HealthReport, OperationTimer, PerformanceMetrics};
 use rmcp::handler::server::{
@@ -22,18 +23,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
-
-/// Metadata about an ingested repository
-#[derive(Debug, Clone)]
-struct RepositoryMetadata {
-    url: String,
-    branch: String,
-    commit_hash: String,
-    local_path: PathBuf,
-    subdirectories: Option<Vec<String>>,
-    file_count: usize,
-    ingested_at: u64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct IngestRepositoryParams {
