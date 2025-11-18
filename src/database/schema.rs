@@ -108,6 +108,9 @@ mod tests {
         assert_eq!(schema.fields().len(), 14);
 
         let embedding_field = schema.field_with_name("embedding").unwrap();
-        assert!(matches!(embedding_field.data_type(), DataType::FixedSizeList(_, 384)));
+        assert!(matches!(
+            embedding_field.data_type(),
+            DataType::FixedSizeList(_, 384)
+        ));
     }
 }

@@ -1,8 +1,6 @@
 // file: src/pipeline/progress.rs
 // description: progress tracking and statistics reporting for pipeline execution
 // reference: uses indicatif for progress bars and tracks processing metrics
-
-use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
