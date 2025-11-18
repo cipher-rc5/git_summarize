@@ -4,15 +4,15 @@ A high-performance RAG (Retrieval-Augmented Generation) pipeline for GitHub repo
 
 ## Features
 
-- 🚀 **Universal GitHub Support**: Download and process any public or private GitHub repository
-- 🔍 **Vector Search**: LanceDB-powered semantic search with embeddings
-- ⚡ **High Performance**: Parallel processing with configurable worker pools
-- 📊 **RAG Pipeline**: Production-ready retrieval pipeline for LLM applications
-- 🔄 **Incremental Updates**: Smart sync with deduplication
-- 📝 **Markdown Processing**: Advanced parsing and normalization
-- 🤖 **MCP Integration**: Model Context Protocol server for agentic tools and local LLMs
-- 🎯 **Flexible Configuration**: TOML config files with environment variable overrides
-- 🌐 **Groq API Support**: Optional integration with Groq embeddings API
+- **Universal GitHub Support**: Download and process any public or private GitHub repository
+- **Vector Search**: LanceDB-powered semantic search with embeddings
+- **High Performance**: Parallel processing with configurable worker pools
+- **RAG Pipeline**: Production-ready retrieval pipeline for LLM applications
+- **Incremental Updates**: Smart sync with deduplication
+- **Markdown Processing**: Advanced parsing and normalization
+- **MCP Integration**: Model Context Protocol server for agentic tools and local LLMs
+- **Flexible Configuration**: TOML config files with environment variable overrides
+- **Groq API Support**: Optional integration with Groq embeddings API
 
 ## What is RAG?
 

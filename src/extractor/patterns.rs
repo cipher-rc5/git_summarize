@@ -94,31 +94,6 @@ lazy_static! {
     pub static ref HEX_COLOR: Regex = Regex::new(
         r"#(?:[0-9a-fA-F]{3}){1,2}\b"
     ).expect("HEX_COLOR regex is valid");
-
-    // ============================================================================
-    // BLOCKCHAIN/CRYPTOCURRENCY PATTERNS (OPTIONAL)
-    // These are kept for compatibility but are optional to use
-    // ============================================================================
-
-    /// Matches Bitcoin addresses (Legacy, SegWit, and Native SegWit formats)
-    pub static ref BTC_ADDRESS: Regex = Regex::new(
-        r"(?i)\b(bc1[a-z0-9]{39,59}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"
-    ).expect("BTC_ADDRESS regex is valid");
-
-    /// Matches Ethereum addresses (0x followed by 40 hex characters)
-    pub static ref ETH_ADDRESS: Regex = Regex::new(
-        r"(?i)\b0x[a-fA-F0-9]{40}\b"
-    ).expect("ETH_ADDRESS regex is valid");
-
-    /// Matches Monero addresses (starts with 4)
-    pub static ref XMR_ADDRESS: Regex = Regex::new(
-        r"\b4[0-9AB][1-9A-HJ-NP-Za-km-z]{93,104}\b"
-    ).expect("XMR_ADDRESS regex is valid");
-
-    /// Matches Tron addresses (starts with T)
-    pub static ref TRX_ADDRESS: Regex = Regex::new(
-        r"\bT[A-Za-z1-9]{33}\b"
-    ).expect("TRX_ADDRESS regex is valid");
 }
 
 // ============================================================================
@@ -141,18 +116,6 @@ pub fn is_valid_email(email: &str) -> bool {
 /// Validates a URL format
 pub fn is_valid_url(url: &str) -> bool {
     URL.is_match(url) && (url.starts_with("http://") || url.starts_with("https://"))
-}
-
-// Cryptocurrency-specific validators (optional)
-
-/// Validates a Bitcoin address format
-pub fn is_valid_btc_address(address: &str) -> bool {
-    BTC_ADDRESS.is_match(address)
-}
-
-/// Validates an Ethereum address format
-pub fn is_valid_eth_address(address: &str) -> bool {
-    ETH_ADDRESS.is_match(address) && address.len() == 42
 }
 
 #[cfg(test)]
@@ -262,20 +225,5 @@ mod tests {
         assert!(HEX_COLOR.is_match("#abc"));
         assert!(HEX_COLOR.is_match("#000000"));
         assert!(!HEX_COLOR.is_match("#GG5733")); // Invalid hex
-    }
-
-    // Cryptocurrency Pattern Tests (optional)
-    #[test]
-    fn test_btc_pattern() {
-        assert!(BTC_ADDRESS.is_match("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
-        assert!(BTC_ADDRESS.is_match("bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"));
-        assert!(is_valid_btc_address("3J98t1WpEZ73CNmYviecrnyiWrnqRhWNLy"));
-    }
-
-    #[test]
-    fn test_eth_pattern() {
-        assert!(ETH_ADDRESS.is_match("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"));
-        assert!(!ETH_ADDRESS.is_match("0xinvalid"));
-        assert!(!is_valid_eth_address("0x742d35Cc")); // Too short
     }
 }
