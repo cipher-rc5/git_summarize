@@ -112,10 +112,7 @@ impl HealthReport {
 
             output.push_str(&format!(
                 "{} {} ({:?}) - {}ms",
-                check_icon,
-                check.component,
-                check.status,
-                check.response_time_ms
+                check_icon, check.component, check.status, check.response_time_ms
             ));
 
             if let Some(ref msg) = check.message {
@@ -237,11 +234,7 @@ impl PerformanceMetrics {
     pub fn format(&self) -> String {
         format!(
             "{}: {} items in {}ms ({:.2} items/sec, {:.2}ms per item)",
-            self.operation,
-            self.count,
-            self.duration_ms,
-            self.throughput,
-            self.avg_item_time_ms
+            self.operation, self.count, self.duration_ms, self.throughput, self.avg_item_time_ms
         )
     }
 }

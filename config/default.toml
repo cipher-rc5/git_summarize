@@ -4,7 +4,8 @@
 # GitHub repository URL (public or private with credentials)
 # Example: "https://github.com/username/repo"
 # For private repos with token: "https://TOKEN@github.com/username/repo"
-source_url = "https://github.com/user/example-repo"
+# source_url = "https://github.com/user/example-repo"
+source_url = "https://github.com/cipher-rc5/reading_app"
 
 # Local path where repository will be cloned
 local_path = "./data_repo"
@@ -26,9 +27,37 @@ table_name = "documents"
 # Batch size for bulk insertions
 batch_size = 100
 
-# Groq API configuration (optional)
-# groq_api_key = "your-groq-api-key-here"  # Or use env var GROQ_API_KEY
-groq_model = "openai/gpt-oss-120b"
+[embedding]
+# OpenAI-compatible embeddings endpoint. Works with OpenAI, Voyage, Jina, or a
+# local text-embeddings-inference server by changing base_url + model.
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+
+# Vector dimension. Must match what the model returns. For OpenAI
+# text-embedding-3-* this is sent as the `dimensions` parameter (Matryoshka),
+# so 768 keeps the index compact. The DB schema is built from this value, so
+# changing it requires re-ingesting (reset + ingest).
+dimension = 768
+
+# API key. Prefer the env var EMBEDDING_API_KEY or OPENAI_API_KEY.
+# api_key = "sk-..."
+
+# If the embedding API fails, fall back to a deterministic NON-SEMANTIC vector.
+# Off by default: a failure should error rather than silently poison the index
+# with vectors that don't share a space with real embeddings. Tests/offline only.
+allow_fallback = false
+
+[generation]
+# OpenAI-compatible chat completions endpoint for the answer-synthesis step.
+# Groq serves this and `openai/gpt-oss-120b` is a valid chat model there.
+base_url = "https://api.groq.com/openai/v1"
+model = "openai/gpt-oss-120b"
+
+# API key. Prefer the env var GENERATION_API_KEY or GROQ_API_KEY.
+# api_key = "gsk_..."
+
+# Max retrieved chunks fed to the model as context for `ask`.
+max_context_chunks = 8
 
 [pipeline]
 # Number of parallel workers for processing files

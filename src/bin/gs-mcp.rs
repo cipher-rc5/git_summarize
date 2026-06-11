@@ -1,5 +1,5 @@
-// file: src/main.rs
-// description: commandline application entry point
+// file: src/bin/gs-mcp.rs
+// description: gs-mcp binary entry point
 // reference: application bootstrap and orchestration
 
 use anyhow::Result;

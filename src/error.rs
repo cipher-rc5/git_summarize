@@ -110,26 +110,14 @@ macro_rules! impl_from_gix_error {
 impl_from_gix_error!(GitOpen, gix::open::Error);
 impl_from_gix_error!(GitClone, gix::clone::Error);
 impl_from_gix_error!(GitConnect, gix::remote::connect::Error);
-impl_from_gix_error!(
-    GitFetchPrepare,
-    gix::remote::fetch::prepare::Error
-);
+impl_from_gix_error!(GitFetchPrepare, gix::remote::fetch::prepare::Error);
 impl_from_gix_error!(GitFindReference, gix::reference::find::Error);
 impl_from_gix_error!(
     GitFindExistingReference,
     gix::reference::find::existing::Error
 );
-impl_from_gix_error!(
-    GitFindObject,
-    gix::object::find::existing::Error
-);
-impl_from_gix_error!(
-    GitObjectConversion,
-    gix::object::try_into::Error
-);
+impl_from_gix_error!(GitFindObject, gix::object::find::existing::Error);
+impl_from_gix_error!(GitObjectConversion, gix::object::try_into::Error);
 impl_from_gix_error!(GitReferenceEdit, gix::reference::edit::Error);
-impl_from_gix_error!(
-    GitWorktreeCheckout,
-    gix_worktree_state::checkout::Error
-);
+impl_from_gix_error!(GitWorktreeCheckout, gix_worktree_state::checkout::Error);
 impl_from_gix_error!(GitPeel, gix::object::peel::to_kind::Error);

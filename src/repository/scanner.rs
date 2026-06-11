@@ -4,6 +4,7 @@
 
 use crate::config::PipelineConfig;
 use crate::error::Result;
+use glob::Pattern;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,16 +91,15 @@ impl FileScanner {
     }
 
     fn should_skip(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
+        let normalized_path = path.to_string_lossy().replace('\\', "/");
 
         for pattern in &self.config.skip_patterns {
-            if pattern.contains('*') {
-                let pattern_without_star = pattern.replace("*.", ".");
-                if path_str.ends_with(&pattern_without_star) {
-                    return true;
-                }
-            } else if path_str.contains(pattern) {
-                return true;
+            let normalized_pattern = pattern.replace('\\', "/");
+
+            match Pattern::new(&normalized_pattern) {
+                Ok(glob) if glob.matches(&normalized_path) => return true,
+                Err(_) if normalized_path.contains(&normalized_pattern) => return true,
+                _ => continue,
             }
         }
 
@@ -149,7 +149,7 @@ impl FileScanner {
         let content = fs::read_to_string(path)?;
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
 }
 

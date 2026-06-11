@@ -4,6 +4,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Truncate to at most `max` chars (not bytes), appending an ellipsis if cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}...")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     /// Document ID (content hash)
@@ -14,6 +24,9 @@ pub struct SearchResult {
 
     /// Relative path from repository root
     pub relative_path: String,
+
+    /// Heading breadcrumb of the matched chunk, e.g. "Setup > From source".
+    pub heading_path: String,
 
     /// Document content
     pub content: String,
@@ -34,44 +47,69 @@ pub struct SearchResult {
     pub last_modified: u64,
 }
 
+/// Groups disk path information to keep constructor arguments manageable.
+#[derive(Debug, Clone)]
+pub struct SearchResultPaths {
+    pub file_path: String,
+    pub relative_path: String,
+    pub heading_path: String,
+}
+
+/// Groups scoring metadata (score and optional distance).
+#[derive(Debug, Clone)]
+pub struct SearchResultScoring {
+    pub score: f32,
+    pub distance: Option<f32>,
+}
+
+/// Groups file metadata such as size and timestamps.
+#[derive(Debug, Clone)]
+pub struct SearchResultFileMetadata {
+    pub file_size: u64,
+    pub last_modified: u64,
+}
+
 impl SearchResult {
     /// Create a new search result
     pub fn new(
         id: String,
-        file_path: String,
-        relative_path: String,
+        paths: SearchResultPaths,
         content: String,
         repository_url: String,
-        score: f32,
-        distance: Option<f32>,
-        file_size: u64,
-        last_modified: u64,
+        scoring: SearchResultScoring,
+        metadata: SearchResultFileMetadata,
     ) -> Self {
         Self {
             id,
-            file_path,
-            relative_path,
+            file_path: paths.file_path,
+            relative_path: paths.relative_path,
+            heading_path: paths.heading_path,
             content,
             repository_url,
-            score,
-            distance,
-            file_size,
-            last_modified,
+            score: scoring.score,
+            distance: scoring.distance,
+            file_size: metadata.file_size,
+            last_modified: metadata.last_modified,
+        }
+    }
+
+    /// A human-readable location: "relative/path.md # Heading > Subheading".
+    pub fn location(&self) -> String {
+        if self.heading_path.is_empty() {
+            self.relative_path.clone()
+        } else {
+            format!("{} # {}", self.relative_path, self.heading_path)
         }
     }
 
     /// Format as a summary string for display
     pub fn format_summary(&self, max_content_len: usize) -> String {
-        let content_preview = if self.content.len() > max_content_len {
-            format!("{}...", &self.content[..max_content_len])
-        } else {
-            self.content.clone()
-        };
+        let content_preview = truncate_chars(&self.content, max_content_len);
 
         format!(
             "Score: {:.4} | {} ({})\n{}\n",
             self.score,
-            self.relative_path,
+            self.location(),
             self.repository_url,
             content_preview
         )
@@ -86,14 +124,21 @@ mod tests {
     fn test_search_result_creation() {
         let result = SearchResult::new(
             "abc123".to_string(),
-            "/path/to/file.md".to_string(),
-            "file.md".to_string(),
+            SearchResultPaths {
+                file_path: "/path/to/file.md".to_string(),
+                relative_path: "file.md".to_string(),
+                heading_path: String::new(),
+            },
             "Test content".to_string(),
             "https://github.com/example/repo".to_string(),
-            0.95,
-            Some(0.05),
-            100,
-            1234567890,
+            SearchResultScoring {
+                score: 0.95,
+                distance: Some(0.05),
+            },
+            SearchResultFileMetadata {
+                file_size: 100,
+                last_modified: 1_234_567_890,
+            },
         );
 
         assert_eq!(result.score, 0.95);
@@ -105,14 +150,21 @@ mod tests {
     fn test_format_summary() {
         let result = SearchResult::new(
             "abc123".to_string(),
-            "/path/to/file.md".to_string(),
-            "docs/readme.md".to_string(),
+            SearchResultPaths {
+                file_path: "/path/to/file.md".to_string(),
+                relative_path: "docs/readme.md".to_string(),
+                heading_path: String::new(),
+            },
             "This is a very long content that will be truncated".to_string(),
             "https://github.com/example/repo".to_string(),
-            0.87,
-            None,
-            100,
-            1234567890,
+            SearchResultScoring {
+                score: 0.87,
+                distance: None,
+            },
+            SearchResultFileMetadata {
+                file_size: 100,
+                last_modified: 1_234_567_890,
+            },
         );
 
         let summary = result.format_summary(20);

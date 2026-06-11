@@ -6,4 +6,6 @@ pub mod document;
 pub mod search_result;
 
 pub use document::Document;
-pub use search_result::SearchResult;
+pub use search_result::{
+    SearchResult, SearchResultFileMetadata, SearchResultPaths, SearchResultScoring,
+};

@@ -3,13 +3,14 @@
 // reference: https://docs.rs/lancedb
 
 use crate::database::client::LanceDbClient;
-use crate::database::embeddings::GroqEmbeddingClient;
+use crate::database::embeddings::EmbeddingClient;
 use crate::database::schema::SchemaManager;
 use crate::error::{PipelineError, Result};
 use crate::models::Document;
+use crate::parser::{ChunkOptions, chunk_markdown};
 use arrow_array::{
-    ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
-    StringArray, UInt64Array,
+    ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray,
+    UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field};
 use std::sync::Arc;
@@ -17,7 +18,9 @@ use tracing::{debug, info, warn};
 
 pub struct BatchInserter<'a> {
     client: &'a LanceDbClient,
-    embedding_client: Option<Arc<GroqEmbeddingClient>>,
+    embedding: Arc<EmbeddingClient>,
+    chunk_opts: ChunkOptions,
+    allow_fallback: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,85 +30,124 @@ pub struct InsertStats {
 }
 
 impl<'a> BatchInserter<'a> {
-    pub fn new(client: &'a LanceDbClient) -> Self {
-        // Try to create Groq client from config if API key is present
-        let embedding_client = client.groq_api_key().map(|key| {
-            Arc::new(GroqEmbeddingClient::new(
-                key.clone(),
-                client.groq_model().to_string(),
-            ))
-        });
-
-        if embedding_client.is_some() {
-            info!("BatchInserter initialized with Groq API embeddings");
-        } else {
-            warn!("BatchInserter initialized without API key - using fallback embeddings");
-        }
-
+    pub fn new(client: &'a LanceDbClient, embedding: Arc<EmbeddingClient>) -> Self {
         Self {
             client,
-            embedding_client,
+            embedding,
+            chunk_opts: ChunkOptions::default(),
+            allow_fallback: false,
         }
     }
 
-    /// Insert a single document with its embedding into LanceDB
-    pub async fn insert_document(&self, document: &Document) -> Result<String> {
-        // Fixed embedding dimension (can be made configurable later)
-        const EMBEDDING_DIM: usize = 768;
-        let schema = SchemaManager::get_documents_schema(EMBEDDING_DIM);
+    pub fn with_options(mut self, chunk_opts: ChunkOptions, allow_fallback: bool) -> Self {
+        self.chunk_opts = chunk_opts;
+        self.allow_fallback = allow_fallback;
+        self
+    }
 
-        // Generate embedding using Groq API or fallback
-        let embedding = self
-            .generate_embedding(&document.content, EMBEDDING_DIM)
-            .await?;
+    /// Chunk a file's (normalized) content, embed every chunk, and insert all
+    /// chunks as rows. Existing rows for the same file are removed first so
+    /// reprocessing does not leave stale chunks. Returns the number of chunks
+    /// inserted.
+    pub async fn insert_file(
+        &self,
+        file_path: &str,
+        relative_path: &str,
+        content: &str,
+        last_modified: u64,
+        repository_url: &str,
+        normalized: bool,
+    ) -> Result<usize> {
+        let chunks = chunk_markdown(content, &self.chunk_opts);
+        if chunks.is_empty() {
+            debug!("No chunks produced for {}", relative_path);
+            return Ok(0);
+        }
 
-        let record_batch =
-            Self::create_record_batch(schema.clone(), vec![document.clone()], vec![embedding])?;
+        let embedding_texts: Vec<String> = chunks.iter().map(|c| c.embedding_text()).collect();
+        let embeddings = self.embed(&embedding_texts).await?;
+
+        let documents: Vec<Document> = chunks
+            .iter()
+            .map(|chunk| {
+                Document::from_chunk(
+                    file_path,
+                    relative_path,
+                    chunk,
+                    last_modified,
+                    repository_url,
+                    normalized,
+                )
+            })
+            .collect();
+
+        let dim = self.embedding.dimension();
+        let schema = SchemaManager::get_documents_schema(dim);
+        let record_batch = Self::create_record_batch(schema, &documents, &embeddings)?;
 
         let table_name = self.client.table_name();
 
-        // Check if table exists
         if !self.client.table_exists(table_name).await? {
-            // Create table with first batch
             self.client
                 .get_connection()
-                .create_table(
-                    table_name,
-                    RecordBatchIterator::new(vec![Ok(record_batch)], schema.clone()),
-                )
+                .create_table(table_name, vec![record_batch])
                 .execute()
                 .await
                 .map_err(|e| PipelineError::Database(format!("Failed to create table: {}", e)))?;
             info!("Created new table: {}", table_name);
         } else {
-            // Append to existing table
+            // Remove any prior chunks for this file before re-inserting.
+            self.client
+                .delete_by_file(repository_url, relative_path)
+                .await?;
             let table = self.client.get_table(table_name).await?;
             table
-                .add(RecordBatchIterator::new(vec![Ok(record_batch)], schema))
+                .add(vec![record_batch])
                 .execute()
                 .await
-                .map_err(|e| {
-                    PipelineError::Database(format!("Failed to insert document: {}", e))
-                })?;
+                .map_err(|e| PipelineError::Database(format!("Failed to insert chunks: {}", e)))?;
         }
 
-        debug!("Inserted document: {}", document.file_path);
-        Ok(document.content_hash.clone())
+        debug!("Inserted {} chunk(s) for {}", documents.len(), relative_path);
+        Ok(documents.len())
+    }
+
+    /// Embed `texts`, applying the configured fallback only when explicitly
+    /// enabled. By default a failed call propagates as an error rather than
+    /// silently filling the index with non-semantic vectors.
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        match self.embedding.embed_batch(texts).await {
+            Ok(vectors) => Ok(vectors),
+            Err(e) if self.allow_fallback => {
+                warn!("Embedding API failed ({e}); using non-semantic fallback (degraded)");
+                let dim = self.embedding.dimension();
+                Ok(texts
+                    .iter()
+                    .map(|t| EmbeddingClient::generate_fallback_embedding(t, dim))
+                    .collect())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Create an Arrow RecordBatch from documents and embeddings
     fn create_record_batch(
         schema: Arc<arrow_schema::Schema>,
-        documents: Vec<Document>,
-        embeddings: Vec<Vec<f32>>,
+        documents: &[Document],
+        embeddings: &[Vec<f32>],
     ) -> Result<RecordBatch> {
         let len = documents.len();
 
+        if embeddings.is_empty() || embeddings.len() != len {
+            return Err(PipelineError::Database(format!(
+                "embedding count {} does not match document count {}",
+                embeddings.len(),
+                len
+            )));
+        }
+
         // Build arrays for each field
-        let ids: StringArray = documents
-            .iter()
-            .map(|doc| Some(doc.content_hash.clone()))
-            .collect();
+        let ids: StringArray = documents.iter().map(|doc| Some(doc.id.clone())).collect();
 
         let file_paths: StringArray = documents
             .iter()
@@ -127,6 +169,14 @@ impl<'a> BatchInserter<'a> {
             .map(|doc| Some(doc.content_hash.clone()))
             .collect();
 
+        let chunk_indices: UInt32Array =
+            documents.iter().map(|doc| Some(doc.chunk_index)).collect();
+
+        let heading_paths: StringArray = documents
+            .iter()
+            .map(|doc| Some(doc.heading_path.clone()))
+            .collect();
+
         let file_sizes: UInt64Array = documents.iter().map(|doc| Some(doc.file_size)).collect();
 
         let last_modifieds: UInt64Array = documents
@@ -144,7 +194,7 @@ impl<'a> BatchInserter<'a> {
             .flat_map(|emb| emb.iter().copied())
             .collect();
 
-        let value_field = Arc::new(Field::new("embedding_value", DataType::Float32, false));
+        let value_field = Arc::new(Field::new("item", DataType::Float32, true));
         let embedding_list = FixedSizeListArray::try_new(
             value_field,
             embeddings[0].len() as i32,
@@ -172,6 +222,8 @@ impl<'a> BatchInserter<'a> {
                 Arc::new(relative_paths),
                 Arc::new(contents),
                 Arc::new(content_hashes),
+                Arc::new(chunk_indices),
+                Arc::new(heading_paths),
                 Arc::new(file_sizes),
                 Arc::new(last_modifieds),
                 Arc::new(parsed_ats),
@@ -184,37 +236,6 @@ impl<'a> BatchInserter<'a> {
             ],
         )
         .map_err(|e| PipelineError::Database(format!("Failed to create record batch: {}", e)))
-    }
-
-    /// Generate embedding using Groq API or fallback to deterministic embeddings
-    async fn generate_embedding(&self, text: &str, dim: usize) -> Result<Vec<f32>> {
-        // Try to use Groq API if available
-        if let Some(ref client) = self.embedding_client {
-            match client.generate_embedding(text).await {
-                Ok(embedding) => {
-                    // Verify embedding dimension matches expected
-                    if embedding.len() != dim {
-                        warn!(
-                            "Groq API returned embedding with dimension {}, expected {}. Using fallback.",
-                            embedding.len(),
-                            dim
-                        );
-                        Ok(GroqEmbeddingClient::generate_fallback_embedding(text, dim))
-                    } else {
-                        debug!("Generated Groq API embedding for {} chars", text.len());
-                        Ok(embedding)
-                    }
-                }
-                Err(e) => {
-                    warn!("Groq API embedding failed: {}. Using fallback.", e);
-                    Ok(GroqEmbeddingClient::generate_fallback_embedding(text, dim))
-                }
-            }
-        } else {
-            // No API key configured, use fallback
-            debug!("Using fallback embedding (no API key configured)");
-            Ok(GroqEmbeddingClient::generate_fallback_embedding(text, dim))
-        }
     }
 
     pub async fn log_processing(
@@ -253,8 +274,8 @@ mod tests {
 
     #[test]
     fn test_fallback_embedding_generation() {
-        let embedding = GroqEmbeddingClient::generate_fallback_embedding("test content", 384);
+        let embedding = EmbeddingClient::generate_fallback_embedding("test content", 384);
         assert_eq!(embedding.len(), 384);
-        assert!(embedding.iter().all(|&x| x >= 0.0 && x <= 1.0));
+        assert!(embedding.iter().all(|&x| (0.0..=1.0).contains(&x)));
     }
 }

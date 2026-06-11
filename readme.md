@@ -1,6 +1,6 @@
 # git_summarize
 
-A high-performance RAG (Retrieval-Augmented Generation) pipeline for GitHub repositories using LanceDB vector storage. This tool downloads any public or private GitHub repository, processes its content, generates embeddings, and stores them in LanceDB for efficient semantic search and LLM context retrieval.
+RAG (Retrieval-Augmented Generation) pipeline for GitHub repositories using LanceDB vector storage. This tool downloads any public or private GitHub repository, processes its content, generates embeddings, and stores them in LanceDB for efficient semantic search and LLM context retrieval.
 
 ## Features
 
@@ -24,7 +24,7 @@ RAG (Retrieval-Augmented Generation) enhances LLMs by providing relevant context
 
 ## Prerequisites
 
-- Rust 1.80+ (install from https://rustup.rs)
+- Rust 1.90+ (install from https://rustup.rs)
 - Git (for repository synchronization)
 
 ## Installation
@@ -235,7 +235,7 @@ max_file_size_mb = 10
 
 ### Data Flow
 
-```
+```text
 GitHub Repository
     ↓
 Git Clone/Sync
@@ -246,11 +246,11 @@ Parallel Processing Pool
     ↓
 ┌─────────────────────────┐
 │  Document Processor     │
-│  ├─ Read file          │
-│  ├─ Parse markdown     │
-│  ├─ Normalize content  │
-│  ├─ Generate embedding │
-│  └─ Extract entities   │
+│  ├─ Read file           │
+│  ├─ Parse markdown      │
+│  ├─ Normalize content   │
+│  ├─ Generate embedding  │
+│  └─ Extract entities    │
 └─────────────────────────┘
     ↓
 LanceDB Vector Storage
@@ -268,7 +268,7 @@ Currently uses a simple deterministic embedding (placeholder). For production:
 - **Custom**: sentence-transformers, Cohere, etc.
 
 **To integrate real embeddings:**
-```rust
+```rust,ignore
 // In src/database/insert.rs, replace generate_embedding()
 // with your embedding model:
 use fastembed::TextEmbedding;
@@ -283,7 +283,7 @@ fn generate_embedding(text: &str, dim: usize) -> Vec<f32> {
 
 ### Documents Table
 
-```
+```text
 id: String              - Content hash (unique identifier)
 file_path: String       - Absolute file path
 relative_path: String   - Repository-relative path
@@ -655,4 +655,3 @@ The MCP server maintains metadata about ingested repositories including:
 - Ingestion timestamp
 
 This enables proper version control and selective updates of your RAG knowledge base.
-

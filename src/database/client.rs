@@ -4,7 +4,9 @@
 
 use crate::config::DatabaseConfig;
 use crate::error::{PipelineError, Result};
-use crate::models::SearchResult;
+use crate::models::{
+    SearchResult, SearchResultFileMetadata, SearchResultPaths, SearchResultScoring,
+};
 use arrow_array::{Float32Array, StringArray, UInt64Array};
 use futures::StreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -15,6 +17,11 @@ use tracing::{debug, info, warn};
 pub struct LanceDbClient {
     connection: Connection,
     config: DatabaseConfig,
+}
+
+/// Escape single quotes for safe interpolation into a SQL string literal.
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 impl LanceDbClient {
@@ -92,14 +99,6 @@ impl LanceDbClient {
         &self.config.table_name
     }
 
-    pub fn groq_api_key(&self) -> Option<&String> {
-        self.config.groq_api_key.as_ref()
-    }
-
-    pub fn groq_model(&self) -> &str {
-        &self.config.groq_model
-    }
-
     /// Delete all documents belonging to a specific repository
     pub async fn delete_by_repository(&self, repository_url: &str) -> Result<u64> {
         if !self.table_exists(&self.config.table_name).await? {
@@ -109,9 +108,7 @@ impl LanceDbClient {
 
         let table = self.get_table(&self.config.table_name).await?;
 
-        // Use LanceDB's delete predicate syntax
-        // The predicate filters which rows to delete
-        let predicate = format!("repository_url = '{}'", repository_url);
+        let predicate = format!("repository_url = '{}'", escape_sql_literal(repository_url));
 
         info!("Deleting documents with predicate: {}", predicate);
 
@@ -122,12 +119,34 @@ impl LanceDbClient {
             ))
         })?;
 
-        // LanceDB delete doesn't return count directly, so we'll return success
         info!(
             "Successfully deleted documents for repository: {}",
             repository_url
         );
         Ok(0) // LanceDB doesn't return deletion count in this API
+    }
+
+    /// Delete all chunks for a single file within a repository. Used to clear
+    /// stale chunks before re-inserting a reprocessed file.
+    pub async fn delete_by_file(&self, repository_url: &str, relative_path: &str) -> Result<()> {
+        if !self.table_exists(&self.config.table_name).await? {
+            return Ok(());
+        }
+
+        let table = self.get_table(&self.config.table_name).await?;
+        let predicate = format!(
+            "repository_url = '{}' AND relative_path = '{}'",
+            escape_sql_literal(repository_url),
+            escape_sql_literal(relative_path)
+        );
+
+        table.delete(&predicate).await.map_err(|e| {
+            PipelineError::Database(format!(
+                "Failed to delete chunks for {}: {}",
+                relative_path, e
+            ))
+        })?;
+        Ok(())
     }
 
     /// Search for documents by vector similarity
@@ -162,7 +181,7 @@ impl LanceDbClient {
 
         // Add repository filter if provided
         if let Some(repo_url) = repository_filter {
-            let filter = format!("repository_url = '{}'", repo_url);
+            let filter = format!("repository_url = '{}'", escape_sql_literal(repo_url));
             query = query.only_if(&filter);
             debug!("Applied filter: {}", filter);
         }
@@ -219,6 +238,17 @@ impl LanceDbClient {
                     PipelineError::Database("Invalid 'content' column type".to_string())
                 })?;
 
+            let heading_paths = batch
+                .column_by_name("heading_path")
+                .ok_or_else(|| {
+                    PipelineError::Database("Missing 'heading_path' column".to_string())
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    PipelineError::Database("Invalid 'heading_path' column type".to_string())
+                })?;
+
             let repository_urls = batch
                 .column_by_name("repository_url")
                 .ok_or_else(|| {
@@ -260,6 +290,7 @@ impl LanceDbClient {
                 let id = ids.value(i).to_string();
                 let file_path = file_paths.value(i).to_string();
                 let relative_path = relative_paths.value(i).to_string();
+                let heading_path = heading_paths.value(i).to_string();
                 let content = contents.value(i).to_string();
                 let repository_url = repository_urls.value(i).to_string();
                 let file_size = file_sizes.value(i);
@@ -279,14 +310,18 @@ impl LanceDbClient {
 
                 search_results.push(SearchResult::new(
                     id,
-                    file_path,
-                    relative_path,
+                    SearchResultPaths {
+                        file_path,
+                        relative_path,
+                        heading_path,
+                    },
                     content,
                     repository_url,
-                    score,
-                    distance,
-                    file_size,
-                    last_modified,
+                    SearchResultScoring { score, distance },
+                    SearchResultFileMetadata {
+                        file_size,
+                        last_modified,
+                    },
                 ));
             }
         }
@@ -306,8 +341,6 @@ mod tests {
             uri: "memory://test".to_string(),
             table_name: "test_table".to_string(),
             batch_size: 100,
-            groq_api_key: None,
-            groq_model: "openai/gpt-oss-120b".to_string(),
         };
 
         assert_eq!(config.uri, "memory://test");

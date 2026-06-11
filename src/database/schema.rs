@@ -52,6 +52,8 @@ impl<'a> SchemaManager<'a> {
             Field::new("relative_path", DataType::Utf8, false),
             Field::new("content", DataType::Utf8, false),
             Field::new("content_hash", DataType::Utf8, false),
+            Field::new("chunk_index", DataType::UInt32, false),
+            Field::new("heading_path", DataType::Utf8, false),
             Field::new("file_size", DataType::UInt64, false),
             Field::new("last_modified", DataType::UInt64, false),
             Field::new("parsed_at", DataType::UInt64, false),
@@ -83,7 +85,7 @@ impl<'a> SchemaManager<'a> {
         if self.client.table_exists(table_name).await? {
             self.client
                 .get_connection()
-                .drop_table(table_name)
+                .drop_table(table_name, &[])
                 .await
                 .map_err(|e| {
                     crate::error::PipelineError::Database(format!(
@@ -105,7 +107,7 @@ mod tests {
     #[test]
     fn test_schema_generation() {
         let schema = SchemaManager::get_documents_schema(384);
-        assert_eq!(schema.fields().len(), 14);
+        assert_eq!(schema.fields().len(), 16);
 
         let embedding_field = schema.field_with_name("embedding").unwrap();
         assert!(matches!(

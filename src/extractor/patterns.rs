@@ -31,7 +31,7 @@ lazy_static! {
 
     /// Matches URLs with http/https protocol
     pub static ref URL: Regex = Regex::new(
-        r"\bhttps?://[^\s<>\"{}|\\^`\[\]]+"
+        r#"\bhttps?://[^\s<>\"{}|\\^`\[\]]+"#
     ).expect("URL regex is valid");
 
     // ============================================================================
@@ -59,7 +59,7 @@ lazy_static! {
 
     /// Matches ISO 8601 dates (e.g., 2024-01-15)
     pub static ref ISO_DATE: Regex = Regex::new(
-        r"\b(\d{4})-(\d{2})-(\d{2})\b"
+        r"\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b"
     ).expect("ISO_DATE regex is valid");
 
     /// Matches month-year format (e.g., January 2024)
@@ -177,9 +177,10 @@ mod tests {
         assert!(SHA1_HASH.is_match("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"));
 
         // SHA-256 (64 hex chars)
-        assert!(SHA256_HASH.is_match(
-            "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
-        ));
+        assert!(
+            SHA256_HASH
+                .is_match("2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae")
+        );
     }
 
     // Date Pattern Tests

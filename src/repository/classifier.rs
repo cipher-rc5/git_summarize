@@ -145,7 +145,11 @@ mod tests {
     #[test]
     fn test_multiple_keywords_same_category() {
         let categories = vec![CategoryRule {
-            keywords: vec!["tests".to_string(), "spec".to_string(), "__tests__".to_string()],
+            keywords: vec![
+                "tests".to_string(),
+                "spec".to_string(),
+                "__tests__".to_string(),
+            ],
             category: "testing".to_string(),
         }];
 

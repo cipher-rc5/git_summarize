@@ -3,13 +3,15 @@
 // reference: https://docs.rs/rmcp
 
 use crate::config::Config;
-use crate::database::{BatchInserter, LanceDbClient, SchemaManager};
+use crate::database::{BatchInserter, EmbeddingClient, LanceDbClient, SchemaManager};
+use crate::generation::AnswerGenerator;
 use crate::mcp::persistence::RepositoryMetadata;
 use crate::repository::{FileScanner, RepositorySync};
 use crate::utils::telemetry::{HealthCheck, HealthReport, OperationTimer, PerformanceMetrics};
 use rmcp::handler::server::{
     ServerHandler,
-    tool::{Parameters, ToolRouter},
+    tool::ToolRouter,
+    wrapper::Parameters,
 };
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
@@ -17,7 +19,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
@@ -65,6 +66,18 @@ struct SearchDocumentsParams {
     limit: Option<usize>,
     #[serde(default)]
     #[schemars(description = "Filter by repository URL (optional)")]
+    repository_filter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct AskQuestionParams {
+    #[schemars(description = "The natural-language question to answer")]
+    question: String,
+    #[serde(default)]
+    #[schemars(description = "Number of context chunks to retrieve (default: from config)")]
+    limit: Option<usize>,
+    #[serde(default)]
+    #[schemars(description = "Filter retrieval to a single repository URL (optional)")]
     repository_filter: Option<String>,
 }
 
@@ -289,9 +302,11 @@ impl GitSummarizeMcp {
         // Process files (limit to 100 per request for responsiveness)
         let limit = file_count.min(100);
 
-        // Get max file size from config
+        // Get max file size and embedding config from app config
         let config_guard = self.read_config().await?;
         let max_file_size_bytes = config_guard.pipeline.max_file_size_mb * 1024 * 1024;
+        let embedding = Arc::new(EmbeddingClient::new(config_guard.embedding.clone()));
+        let allow_fallback = config_guard.embedding.allow_fallback;
         drop(config_guard);
 
         for file in files.iter().take(limit) {
@@ -316,16 +331,19 @@ impl GitSummarizeMcp {
                 }
             };
 
-            let document = crate::models::Document::new(
-                file.path.display().to_string(),
-                file.relative_path.clone(),
-                content,
-                file.modified,
-                repo_url.clone(),
-            );
-
-            let inserter = BatchInserter::new(client);
-            match inserter.insert_document(&document).await {
+            let inserter = BatchInserter::new(client, Arc::clone(&embedding))
+                .with_options(crate::parser::ChunkOptions::default(), allow_fallback);
+            match inserter
+                .insert_file(
+                    &file.path.display().to_string(),
+                    &file.relative_path,
+                    &content,
+                    file.modified,
+                    &repo_url,
+                    false,
+                )
+                .await
+            {
                 Ok(_) => {
                     processed += 1;
                     if processed % 10 == 0 {
@@ -621,50 +639,13 @@ impl GitSummarizeMcp {
 
         let search_limit = limit.unwrap_or(5);
 
+        let query_embedding = self.embed_query(&query).await?;
+
         // Get database client
         let db_guard = self.lock_db_client().await?;
         let client = db_guard
             .as_ref()
             .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
-
-        // Generate embedding for the query
-        const EMBEDDING_DIM: usize = 768;
-        let query_embedding = if let Some(api_key) = client.groq_api_key() {
-            // Use Groq API for embedding
-            let groq_client = crate::database::GroqEmbeddingClient::new(
-                api_key.clone(),
-                client.groq_model().to_string(),
-            );
-
-            match groq_client.generate_embedding(&query).await {
-                Ok(embedding) => {
-                    if embedding.len() != EMBEDDING_DIM {
-                        warn!(
-                            "Groq API returned embedding with dimension {}, expected {}. Using fallback.",
-                            embedding.len(),
-                            EMBEDDING_DIM
-                        );
-                        crate::database::GroqEmbeddingClient::generate_fallback_embedding(
-                            &query,
-                            EMBEDDING_DIM,
-                        )
-                    } else {
-                        info!("Using Groq API embedding for search query");
-                        embedding
-                    }
-                }
-                Err(e) => {
-                    warn!("Groq API embedding failed: {}. Using fallback.", e);
-                    crate::database::GroqEmbeddingClient::generate_fallback_embedding(
-                        &query,
-                        EMBEDDING_DIM,
-                    )
-                }
-            }
-        } else {
-            info!("No API key configured, using fallback embedding for search");
-            crate::database::GroqEmbeddingClient::generate_fallback_embedding(&query, EMBEDDING_DIM)
-        };
 
         // Perform vector search
         let results = client
@@ -703,7 +684,7 @@ impl GitSummarizeMcp {
                  Preview: {}\n\
                  \n",
                 idx + 1,
-                result.relative_path,
+                result.location(),
                 result.score,
                 result.repository_url,
                 result.format_summary(200).trim()
@@ -711,6 +692,84 @@ impl GitSummarizeMcp {
         }
 
         Ok(CallToolResult::success(vec![Content::text(result_text)]))
+    }
+
+    /// Embed a query using the configured embedding provider, honoring the
+    /// `allow_fallback` flag.
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, McpError> {
+        let config = self.read_config().await?;
+        let embedding = EmbeddingClient::new(config.embedding.clone());
+        match embedding.generate_embedding(query).await {
+            Ok(v) => Ok(v),
+            Err(e) if config.embedding.allow_fallback => {
+                warn!("Query embedding failed ({e}); using non-semantic fallback (degraded)");
+                Ok(EmbeddingClient::generate_fallback_embedding(
+                    query,
+                    config.embedding.dimension,
+                ))
+            }
+            Err(e) => Err(Self::make_error(
+                -32603,
+                format!("Failed to embed query: {e}"),
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Ask a natural-language question; retrieves relevant context and returns a cited answer"
+    )]
+    async fn ask_question(
+        &self,
+        Parameters(params): Parameters<AskQuestionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let AskQuestionParams {
+            question,
+            limit,
+            repository_filter,
+        } = params;
+        info!("MCP: Answering question: {}", question);
+
+        self.ensure_db_connected().await?;
+
+        let config = self.read_config().await?;
+        let retrieve_limit = limit.unwrap_or(config.generation.max_context_chunks);
+
+        let query_embedding = self.embed_query(&question).await?;
+
+        let db_guard = self.lock_db_client().await?;
+        let client = db_guard
+            .as_ref()
+            .ok_or_else(|| Self::make_error(-32603, "Database not connected"))?;
+        let results = client
+            .vector_search(query_embedding, retrieve_limit, repository_filter.as_deref())
+            .await
+            .map_err(|e| Self::make_error(-32603, format!("Vector search failed: {}", e)))?;
+        drop(db_guard);
+
+        if results.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No relevant context found in the index for this question.".to_string(),
+            )]));
+        }
+
+        let generator = AnswerGenerator::new(config.generation.clone());
+        let answer = generator
+            .answer(&question, results)
+            .await
+            .map_err(|e| Self::make_error(-32603, format!("Answer generation failed: {}", e)))?;
+
+        let mut out = format!("{}\n\nSources:\n", answer.text);
+        for (idx, source) in answer.sources.iter().enumerate() {
+            out.push_str(&format!(
+                "  [{}] {} ({}) — score {:.4}\n",
+                idx + 1,
+                source.location(),
+                source.repository_url,
+                source.score
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
     #[tool(description = "Get configuration information about the RAG pipeline")]
@@ -732,7 +791,15 @@ impl GitSummarizeMcp {
              - URI: {}\n\
              - Table: {}\n\
              - Batch size: {}\n\
-             - Groq model: {}\n\
+             \n\
+             Embedding:\n\
+             - Provider URL: {}\n\
+             - Model: {}\n\
+             - Dimension: {}\n\
+             \n\
+             Generation:\n\
+             - Provider URL: {}\n\
+             - Model: {}\n\
              \n\
              Pipeline:\n\
              - Parallel workers: {}\n\
@@ -745,7 +812,11 @@ impl GitSummarizeMcp {
             config.database.uri,
             config.database.table_name,
             config.database.batch_size,
-            config.database.groq_model,
+            config.embedding.base_url,
+            config.embedding.model,
+            config.embedding.dimension,
+            config.generation.base_url,
+            config.generation.model,
             config.pipeline.parallel_workers,
             config.pipeline.max_file_size_mb,
             config.pipeline.force_reprocess
@@ -952,17 +1023,14 @@ impl GitSummarizeMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for GitSummarizeMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "Git Summarize MCP".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            },
-            instructions: Some(
-                "Ingest, manage, and semantically search Git repositories with LanceDB.".into(),
-            ),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                "Git Summarize MCP",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
+                "Ingest, manage, and semantically search Git repositories with LanceDB.",
+            )
     }
 }
 
@@ -974,7 +1042,7 @@ mod tests {
     fn test_mcp_server_creation() {
         let config = Config::default_config();
         let mcp = GitSummarizeMcp::new(config);
-        assert!(mcp.get_tool_router().list_all().len() > 0);
+        assert!(!mcp.get_tool_router().list_all().is_empty());
     }
 
     #[test]

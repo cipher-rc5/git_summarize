@@ -38,7 +38,7 @@ impl RepositorySync {
         let mut prepare =
             gix::prepare_clone(self.config.source_url.clone(), &self.config.local_path)?;
 
-        if !self.config.branch.is_empty() && self.config.branch != "main" {
+        if !self.config.branch.is_empty() {
             let branch_ref = <&gix::refs::PartialNameRef>::try_from(self.config.branch.as_str())
                 .map_err(|e| {
                     PipelineError::RepositorySync(format!("Invalid branch name: {}", e))

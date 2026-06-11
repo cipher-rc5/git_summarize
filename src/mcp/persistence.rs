@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-/// Persistent repository metadata (moved from in-memory only)
+/// Persistent repository metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepositoryMetadata {
     pub url: String,
